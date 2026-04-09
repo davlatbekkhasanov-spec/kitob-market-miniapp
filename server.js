@@ -30,22 +30,45 @@ app.get("/", (req, res) => {
             border: none;
             border-radius: 5px;
           }
+          .cart {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: black;
+            color: white;
+            padding: 15px;
+            border-radius: 10px;
+          }
         </style>
       </head>
       <body>
+
         <h1>📚 Kitoblar do‘koni</h1>
 
         <div class="book">
           <h3>Alifbo kitobi</h3>
-          <p>Narxi: 20 000 so‘m</p>
-          <button>Savatga qo‘shish</button>
+          <p>20 000 so‘m</p>
+          <button onclick="addToCart('Alifbo', 20000)">Savatga qo‘shish</button>
         </div>
 
         <div class="book">
           <h3>Matematika 1-sinf</h3>
-          <p>Narxi: 25 000 so‘m</p>
-          <button>Savatga qo‘shish</button>
+          <p>25 000 so‘m</p>
+          <button onclick="addToCart('Matematika', 25000)">Savatga qo‘shish</button>
         </div>
+
+        <div class="cart" id="cart">
+          Savat: 0 so‘m
+        </div>
+
+        <script>
+          let total = 0;
+
+          function addToCart(name, price) {
+            total += price;
+            document.getElementById("cart").innerText = "Savat: " + total + " so‘m";
+          }
+        </script>
 
       </body>
     </html>
