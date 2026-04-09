@@ -542,3 +542,23 @@ app.get("/a", requireAdmin, async (req, res) => {
     </div>
   `, { admin: true }));
 });
+app.use((err, req, res, next) => {
+  res.status(500).send(shell("Xatolik", `
+    <div class="panel" style="max-width:760px;margin:0 auto">
+      <div class="alert err">${escapeHtml(err.message || "Noma'lum xatolik")}</div>
+      <a class="btn dark" href="javascript:history.back()">← Orqaga</a>
+    </div>
+  `, { admin: isAdmin(req) }));
+});
+
+(async () => {
+  try {
+    await initDb();
+    app.listen(PORT, () => {
+      console.log(`Server listening on ${PORT}`);
+    });
+  } catch (e) {
+    console.error("Startup error:", e);
+    process.exit(1);
+  }
+})();
