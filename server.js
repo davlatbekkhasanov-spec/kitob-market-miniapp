@@ -165,16 +165,20 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
-    );
+    )
+  `);
 
+  await query(`
     CREATE TABLE IF NOT EXISTS counterparties (
       id BIGSERIAL PRIMARY KEY,
       name TEXT NOT NULL,
       phone TEXT DEFAULT '',
       note TEXT DEFAULT '',
       created_at TIMESTAMP NOT NULL DEFAULT NOW()
-    );
+    )
+  `);
 
+  await query(`
     CREATE TABLE IF NOT EXISTS books (
       id BIGSERIAL PRIMARY KEY,
       title TEXT NOT NULL,
@@ -185,8 +189,10 @@ async function initDb() {
       image_mime TEXT,
       created_at TIMESTAMP NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-    );
+    )
+  `);
 
+  await query(`
     CREATE TABLE IF NOT EXISTS purchases (
       id BIGSERIAL PRIMARY KEY,
       doc_no TEXT UNIQUE,
@@ -197,8 +203,10 @@ async function initDb() {
       total_sum BIGINT NOT NULL DEFAULT 0,
       created_at TIMESTAMP NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-    );
+    )
+  `);
 
+  await query(`
     CREATE TABLE IF NOT EXISTS purchase_lines (
       id BIGSERIAL PRIMARY KEY,
       purchase_id BIGINT NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
@@ -206,8 +214,10 @@ async function initDb() {
       qty INT NOT NULL CHECK (qty > 0),
       price BIGINT NOT NULL CHECK (price >= 0),
       line_sum BIGINT NOT NULL CHECK (line_sum >= 0)
-    );
+    )
+  `);
 
+  await query(`
     CREATE TABLE IF NOT EXISTS sales (
       id BIGSERIAL PRIMARY KEY,
       doc_no TEXT UNIQUE,
@@ -219,8 +229,10 @@ async function initDb() {
       total_sum BIGINT NOT NULL DEFAULT 0,
       created_at TIMESTAMP NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-    );
+    )
+  `);
 
+  await query(`
     CREATE TABLE IF NOT EXISTS sale_lines (
       id BIGSERIAL PRIMARY KEY,
       sale_id BIGINT NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
@@ -228,12 +240,14 @@ async function initDb() {
       qty INT NOT NULL CHECK (qty > 0),
       price BIGINT NOT NULL CHECK (price >= 0),
       line_sum BIGINT NOT NULL CHECK (line_sum >= 0)
-    );
+    )
+  `);
 
+  await query(`
     CREATE TABLE IF NOT EXISTS counters (
       name TEXT PRIMARY KEY,
       last_value BIGINT NOT NULL DEFAULT 0
-    );
+    )
   `);
 
   await query(`ALTER TABLE books ADD COLUMN IF NOT EXISTS author TEXT DEFAULT ''`);
@@ -263,8 +277,17 @@ async function initDb() {
   await query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW()`);
   await query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW()`);
 
-  await query(`INSERT INTO counters(name,last_value) VALUES ('purchase',0) ON CONFLICT (name) DO NOTHING`);
-  await query(`INSERT INTO counters(name,last_value) VALUES ('sale',0) ON CONFLICT (name) DO NOTHING`);
+  await query(`
+    INSERT INTO counters(name,last_value)
+    VALUES ('purchase',0)
+    ON CONFLICT (name) DO NOTHING
+  `);
+
+  await query(`
+    INSERT INTO counters(name,last_value)
+    VALUES ('sale',0)
+    ON CONFLICT (name) DO NOTHING
+  `);
 
   const demoBooks = await query(`SELECT COUNT(*)::int AS c FROM books`);
   if (demoBooks.rows[0].c === 0) {
@@ -276,7 +299,6 @@ async function initDb() {
     `);
   }
 }
-
     CREATE TABLE IF NOT EXISTS counterparties (
       id BIGSERIAL PRIMARY KEY,
       name TEXT NOT NULL,
