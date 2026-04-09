@@ -149,6 +149,17 @@ async function initDb() {
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
   )`);
+  await q(`
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name='books' AND column_name='price'
+  ) THEN
+    ALTER TABLE books DROP COLUMN price;
+  END IF;
+END $$;
+`);
 
   await q(`ALTER TABLE books ADD COLUMN IF NOT EXISTS author TEXT DEFAULT ''`);
   await q(`ALTER TABLE books ADD COLUMN IF NOT EXISTS image TEXT DEFAULT ''`);
