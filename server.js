@@ -303,6 +303,21 @@ async function initDb() {
   `);
 
   await pool.query(`
+    ALTER TABLE books
+    ADD COLUMN IF NOT EXISTS author TEXT DEFAULT '';
+  `);
+
+  await pool.query(`
+    ALTER TABLE books
+    ADD COLUMN IF NOT EXISTS image_url TEXT DEFAULT '';
+  `);
+
+  await pool.query(`
+    ALTER TABLE books
+    ADD COLUMN IF NOT EXISTS sale_price BIGINT NOT NULL DEFAULT 0;
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS purchases (
       id SERIAL PRIMARY KEY,
       doc_no TEXT NOT NULL UNIQUE,
