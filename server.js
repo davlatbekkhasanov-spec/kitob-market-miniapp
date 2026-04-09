@@ -236,6 +236,116 @@ async function initDb() {
     );
   `);
 
+  await query(`ALTER TABLE books ADD COLUMN IF NOT EXISTS author TEXT DEFAULT ''`);
+  await query(`ALTER TABLE books ADD COLUMN IF NOT EXISTS sale_price BIGINT NOT NULL DEFAULT 0`);
+  await query(`ALTER TABLE books ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE`);
+  await query(`ALTER TABLE books ADD COLUMN IF NOT EXISTS image_data BYTEA`);
+  await query(`ALTER TABLE books ADD COLUMN IF NOT EXISTS image_mime TEXT`);
+  await query(`ALTER TABLE books ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW()`);
+  await query(`ALTER TABLE books ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW()`);
+
+  await query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS doc_no TEXT`);
+  await query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS doc_date DATE NOT NULL DEFAULT CURRENT_DATE`);
+  await query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS counterparty_id BIGINT`);
+  await query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS note TEXT DEFAULT ''`);
+  await query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'draft'`);
+  await query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS total_sum BIGINT NOT NULL DEFAULT 0`);
+  await query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW()`);
+  await query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW()`);
+
+  await query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS doc_no TEXT`);
+  await query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS doc_date DATE NOT NULL DEFAULT CURRENT_DATE`);
+  await query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS customer_name TEXT DEFAULT ''`);
+  await query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS customer_phone TEXT DEFAULT ''`);
+  await query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS note TEXT DEFAULT ''`);
+  await query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'posted'`);
+  await query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS total_sum BIGINT NOT NULL DEFAULT 0`);
+  await query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW()`);
+  await query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW()`);
+
+  await query(`INSERT INTO counters(name,last_value) VALUES ('purchase',0) ON CONFLICT (name) DO NOTHING`);
+  await query(`INSERT INTO counters(name,last_value) VALUES ('sale',0) ON CONFLICT (name) DO NOTHING`);
+
+  const demoBooks = await query(`SELECT COUNT(*)::int AS c FROM books`);
+  if (demoBooks.rows[0].c === 0) {
+    await query(`
+      INSERT INTO books(title,author,sale_price,active)
+      VALUES
+      ('Alifbo kitobi','',20000,TRUE),
+      ('Matematika 1-sinf','',25000,TRUE)
+    `);
+  }
+}
+
+    CREATE TABLE IF NOT EXISTS counterparties (
+      id BIGSERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      phone TEXT DEFAULT '',
+      note TEXT DEFAULT '',
+      created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS books (
+      id BIGSERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      author TEXT DEFAULT '',
+      sale_price BIGINT NOT NULL DEFAULT 0,
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      image_data BYTEA,
+      image_mime TEXT,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS purchases (
+      id BIGSERIAL PRIMARY KEY,
+      doc_no TEXT UNIQUE,
+      doc_date DATE NOT NULL DEFAULT CURRENT_DATE,
+      counterparty_id BIGINT REFERENCES counterparties(id) ON DELETE SET NULL,
+      note TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'draft',
+      total_sum BIGINT NOT NULL DEFAULT 0,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS purchase_lines (
+      id BIGSERIAL PRIMARY KEY,
+      purchase_id BIGINT NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+      book_id BIGINT NOT NULL REFERENCES books(id) ON DELETE RESTRICT,
+      qty INT NOT NULL CHECK (qty > 0),
+      price BIGINT NOT NULL CHECK (price >= 0),
+      line_sum BIGINT NOT NULL CHECK (line_sum >= 0)
+    );
+
+    CREATE TABLE IF NOT EXISTS sales (
+      id BIGSERIAL PRIMARY KEY,
+      doc_no TEXT UNIQUE,
+      doc_date DATE NOT NULL DEFAULT CURRENT_DATE,
+      customer_name TEXT DEFAULT '',
+      customer_phone TEXT DEFAULT '',
+      note TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'posted',
+      total_sum BIGINT NOT NULL DEFAULT 0,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS sale_lines (
+      id BIGSERIAL PRIMARY KEY,
+      sale_id BIGINT NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+      book_id BIGINT NOT NULL REFERENCES books(id) ON DELETE RESTRICT,
+      qty INT NOT NULL CHECK (qty > 0),
+      price BIGINT NOT NULL CHECK (price >= 0),
+      line_sum BIGINT NOT NULL CHECK (line_sum >= 0)
+    );
+
+    CREATE TABLE IF NOT EXISTS counters (
+      name TEXT PRIMARY KEY,
+      last_value BIGINT NOT NULL DEFAULT 0
+    );
+  `);
+
   await query(`INSERT INTO counters(name,last_value) VALUES ('purchase',0) ON CONFLICT (name) DO NOTHING;`);
   await query(`INSERT INTO counters(name,last_value) VALUES ('sale',0) ON CONFLICT (name) DO NOTHING;`);
 
