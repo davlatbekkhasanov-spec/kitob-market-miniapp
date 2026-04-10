@@ -353,30 +353,6 @@ END $$;
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
   )`);
 
-  await q(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS doc_no TEXT`);
-  await q(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS doc_date DATE NOT NULL DEFAULT CURRENT_DATE`);
-  await q(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS counterparty_id BIGINT`);
-  await q(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS note TEXT DEFAULT ''`);
-  await q(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS total_sum BIGINT NOT NULL DEFAULT 0`);
-  await q(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW()`);
-
-  await q(`
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-    FROM information_schema.tables
-    WHERE table_name='purchase_items'
-  ) AND NOT EXISTS (
-    SELECT 1
-    FROM information_schema.tables
-    WHERE table_name='purchase_lines'
-  ) THEN
-    ALTER TABLE purchase_items RENAME TO purchase_lines;
-  END IF;
-END $$;
-`);
-
   await q(`CREATE TABLE IF NOT EXISTS purchase_lines (
     id BIGSERIAL PRIMARY KEY,
     purchase_id BIGINT NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
@@ -387,12 +363,6 @@ END $$;
     sale_price BIGINT NOT NULL DEFAULT 0,
     line_sum BIGINT NOT NULL DEFAULT 0
   )`);
-
-  await q(`ALTER TABLE purchase_lines ADD COLUMN IF NOT EXISTS qty INT NOT NULL DEFAULT 1`);
-  await q(`ALTER TABLE purchase_lines ADD COLUMN IF NOT EXISTS purchase_price BIGINT NOT NULL DEFAULT 0`);
-  await q(`ALTER TABLE purchase_lines ADD COLUMN IF NOT EXISTS markup_percent NUMERIC(10,2) NOT NULL DEFAULT 0`);
-  await q(`ALTER TABLE purchase_lines ADD COLUMN IF NOT EXISTS sale_price BIGINT NOT NULL DEFAULT 0`);
-  await q(`ALTER TABLE purchase_lines ADD COLUMN IF NOT EXISTS line_sum BIGINT NOT NULL DEFAULT 0`);
 
   await q(`CREATE TABLE IF NOT EXISTS customer_orders (
     id BIGSERIAL PRIMARY KEY,
@@ -417,6 +387,12 @@ END $$;
 
   await q(`INSERT INTO counters(name,last_value) VALUES ('purchase',0) ON CONFLICT (name) DO NOTHING`);
 }
+
+async function nextPurchaseNo(client) {
+  const r = await client.query(`UPDATE counters SET last_value=last_value+1 WHERE name='purchase' RETURNING last_value`);
+  return `PR-${String(Number(r.rows[0].last_value)).padStart(6, "0")}`;
+}
+
 app.get("/", async (req, res, next) => {
   try {
     const search = String(req.query.search || "").trim();
@@ -632,7 +608,6 @@ app.get("/admin/purchases/new", requireAdmin, async (_req, res, next) => {
 
 app.post("/admin/purchases/new", requireAdmin, upload.single("image"), async (req, res, next) => {
   const client = await pool.connect();
-
   try {
     const qty = Number(req.body.qty || 0);
     const purchasePrice = Number(req.body.purchase_price || 0);
@@ -680,7 +655,6 @@ app.post("/admin/purchases/new", requireAdmin, upload.single("image"), async (re
     }
 
     const docNo = await nextPurchaseNo(client);
-
     const purchase = await client.query(
       `INSERT INTO purchases(doc_no, doc_date, counterparty_id, note, total_sum)
        VALUES ($1,$2,$3,$4,$5)
