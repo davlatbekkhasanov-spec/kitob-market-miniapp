@@ -63,14 +63,27 @@ function page(title, body, opts = {}) {
 function extFromMime(mime = "") { if (mime.includes("png")) return ".png"; if (mime.includes("webp")) return ".webp"; return ".jpg"; }
 async function saveImage(file) {
   if (!file) return "";
-  if (HAS_CLOUDINARY) {
-    const dataUri = `data:${file.mimetype};base64,${file.buffer.toString("base64")}`;
-    const result = await cloudinary.uploader.upload(dataUri, { folder: CLOUDINARY_FOLDER, resource_type: "image", overwrite: false });
-    return result.secure_url || "";
+
+  const apiKey = "08fc0452211bdc806ac49694254bc485";
+  const base64 = file.buffer.toString("base64");
+
+  const resp = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      image: base64,
+    }),
+  });
+
+  const data = await resp.json();
+
+  if (data.success && data.data && data.data.url) {
+    return data.data.url;
   }
-  const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}${extFromMime(file.mimetype)}`;
-  await fs.promises.writeFile(path.join(UPLOAD_DIR, filename), file.buffer);
-  return `/uploads/${filename}`;
+
+  throw new Error("ImgBB upload xatolik");
 }
 async function initDb() {
   await q(`CREATE TABLE IF NOT EXISTS counterparties (id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,phone TEXT DEFAULT '',note TEXT DEFAULT '',created_at TIMESTAMP NOT NULL DEFAULT NOW())`);
