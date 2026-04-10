@@ -10,7 +10,7 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ADMIN_PIN = process.env.ADMIN_PIN || "2026";
-const SESSION_SECRET = process.env.SESSION_SECRET || "kitob-market-secret-change-me";
+const SESSION_SECRET = process.env.SESSION_SECRET || "kitob-market-super-secret-2026";
 const DELIVERY_FEE = Number(process.env.DELIVERY_FEE || 25000);
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 
@@ -18,9 +18,10 @@ fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes("localhost")
-    ? false
-    : { rejectUnauthorized: false },
+  ssl:
+    process.env.DATABASE_URL && process.env.DATABASE_URL.includes("localhost")
+      ? false
+      : { rejectUnauthorized: false },
 });
 
 const storage = multer.diskStorage({
@@ -28,8 +29,9 @@ const storage = multer.diskStorage({
   filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname || "").toLowerCase() || ".jpg";
     cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
-  }
+  },
 });
+
 const upload = multer({
   storage,
   limits: { fileSize: 5 * 1024 * 1024 },
@@ -37,7 +39,7 @@ const upload = multer({
     const ok = ["image/jpeg", "image/png", "image/webp", "image/jpg"].includes(file.mimetype);
     if (!ok) return cb(new Error("Faqat JPG, PNG yoki WEBP rasm mumkin"));
     cb(null, true);
-  }
+  },
 });
 
 app.use(express.urlencoded({ extended: true }));
@@ -62,7 +64,10 @@ function money(v) {
 }
 
 function signedAdminValue() {
-  return crypto.createHash("sha256").update(`${ADMIN_PIN}|${SESSION_SECRET}`).digest("hex");
+  return crypto
+    .createHash("sha256")
+    .update(`${ADMIN_PIN}|${SESSION_SECRET}`)
+    .digest("hex");
 }
 
 function isAdmin(req) {
@@ -75,7 +80,10 @@ function requireAdmin(req, res, next) {
 }
 
 function page(title, body, opts = {}) {
-  const adminChip = opts.admin ? `<a class="btn soft" href="/admin">Admin</a>` : `<a class="btn soft" href="/admin/login">Admin</a>`;
+  const adminChip = opts.admin
+    ? `<a class="btn soft" href="/admin">Admin</a>`
+    : `<a class="btn soft" href="/admin/login">Admin</a>`;
+
   return `<!doctype html>
 <html lang="uz">
 <head>
@@ -87,7 +95,7 @@ function page(title, body, opts = {}) {
   --bg:#f2f5fb;
   --text:#142032;
   --muted:#607089;
-  --card:#fff;
+  --card:#ffffff;
   --line:#dde6f4;
   --primary:#2f6fff;
   --dark:#15233f;
@@ -95,36 +103,153 @@ function page(title, body, opts = {}) {
   --red:#d93b3b;
 }
 *{box-sizing:border-box}
-body{margin:0;font-family:Arial,Helvetica,sans-serif;background:linear-gradient(180deg,#0f1e38 0,#0f1e38 170px,var(--bg) 170px);color:var(--text)}
-.top{max-width:1100px;margin:0 auto;padding:18px 14px 24px;color:#fff;display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
-.brand{font-size:34px;font-weight:900}.sub{color:#c5d1ea;margin-top:4px}
+body{
+  margin:0;
+  font-family:Arial,Helvetica,sans-serif;
+  background:linear-gradient(180deg,#0f1e38 0,#0f1e38 170px,var(--bg) 170px);
+  color:var(--text)
+}
+.top{
+  max-width:1100px;
+  margin:0 auto;
+  padding:18px 14px 24px;
+  color:#fff;
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:12px
+}
+.brand{font-size:34px;font-weight:900}
+.sub{color:#c5d1ea;margin-top:4px}
 .wrap{max-width:1100px;margin:0 auto;padding:0 14px 90px}
-.hero{background:linear-gradient(135deg,#182c54,#23417a);border-radius:28px;color:#fff;padding:22px;box-shadow:0 16px 40px rgba(15,23,42,.22)}
-.hero h1{margin:0 0 8px;font-size:38px}.hero p{margin:0;color:#d9e3f7;line-height:1.5}
-.panel,.card,.stat{background:var(--card);border-radius:22px;box-shadow:0 10px 28px rgba(15,23,42,.08)}
-.panel{padding:18px;margin-top:18px}.cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:18px}
-@media(max-width:700px){.cards{grid-template-columns:1fr}.hero h1{font-size:30px}.brand{font-size:28px}}
-.card{padding:14px}.book-image{height:220px;background:#eef3fb;border-radius:18px;display:flex;align-items:center;justify-content:center;overflow:hidden}
-.book-image img{width:100%;height:100%;object-fit:cover}.title{font-size:23px;font-weight:900;margin-top:12px}.muted{color:var(--muted)}
-.price{font-size:24px;font-weight:900;margin-top:10px}.stock{margin-top:8px;font-weight:700}.stock.ok{color:var(--green)}.stock.no{color:var(--red)}
-.nav,.actions,.searchbar{display:flex;gap:10px;flex-wrap:wrap}
-.btn,button{border:0;border-radius:14px;padding:11px 15px;background:var(--primary);color:#fff;text-decoration:none;font-weight:800;cursor:pointer}
-.btn.dark{background:var(--dark)}.btn.soft{background:#e8f0ff;color:#1741a5}.btn.green{background:var(--green)}.btn.red{background:var(--red)}
-.form{display:grid;gap:12px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}.grid4{display:grid;grid-template-columns:1.5fr .7fr .8fr .8fr;gap:10px}
-@media(max-width:700px){.grid2,.grid4{grid-template-columns:1fr}}
-input,select,textarea{width:100%;border:1px solid var(--line);border-radius:14px;padding:12px 13px;font-size:16px;background:#fff}
-textarea{min-height:90px;resize:vertical}table{width:100%;border-collapse:collapse}th,td{padding:10px 8px;border-bottom:1px solid #edf2fb;text-align:left;vertical-align:top;font-size:14px}
-.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-top:14px}.stat{padding:16px}.n{font-size:26px;font-weight:900;margin-top:6px}
-.alert{padding:12px 14px;border-radius:16px;margin-bottom:12px;font-weight:700}.alert.err{background:#fff0f0;color:#b91c1c}.alert.ok{background:#edfdf1;color:#0a7a34}
-.badge{display:inline-block;background:#eaf1ff;color:#1741a5;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800}
-.right{text-align:right}.label{font-size:13px;color:var(--muted);font-weight:700;margin-bottom:4px}
-.order-summary,.line-item{background:#f8fbff;border:1px solid #e2ebf8;border-radius:18px;padding:14px}
+.hero{
+  background:linear-gradient(135deg,#182c54,#23417a);
+  border-radius:28px;
+  color:#fff;
+  padding:22px;
+  box-shadow:0 16px 40px rgba(15,23,42,.22)
+}
+.hero h1{margin:0 0 8px;font-size:38px}
+.hero p{margin:0;color:#d9e3f7;line-height:1.5}
+.panel,.card,.stat{
+  background:var(--card);
+  border-radius:22px;
+  box-shadow:0 10px 28px rgba(15,23,42,.08)
+}
+.panel{padding:18px;margin-top:18px}
+.cards{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:14px;
+  margin-top:18px
+}
+@media(max-width:700px){
+  .cards{grid-template-columns:1fr}
+  .hero h1{font-size:30px}
+  .brand{font-size:28px}
+}
+.card{padding:14px}
+.book-image{
+  height:220px;
+  background:#eef3fb;
+  border-radius:18px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  overflow:hidden
+}
+.book-image img{width:100%;height:100%;object-fit:cover}
+.title{font-size:23px;font-weight:900;margin-top:12px}
+.muted{color:var(--muted)}
+.price{font-size:24px;font-weight:900;margin-top:10px}
+.stock{margin-top:8px;font-weight:700}
+.stock.ok{color:var(--green)}
+.stock.no{color:var(--red)}
+.nav,.actions,.searchbar{
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap
+}
+.btn,button{
+  border:0;
+  border-radius:14px;
+  padding:11px 15px;
+  background:var(--primary);
+  color:#fff;
+  text-decoration:none;
+  font-weight:800;
+  cursor:pointer
+}
+.btn.dark{background:var(--dark)}
+.btn.soft{background:#e8f0ff;color:#1741a5}
+.btn.green{background:var(--green)}
+.btn.red{background:var(--red)}
+.form{display:grid;gap:12px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:700px){.grid2{grid-template-columns:1fr}}
+input,select,textarea{
+  width:100%;
+  border:1px solid var(--line);
+  border-radius:14px;
+  padding:12px 13px;
+  font-size:16px;
+  background:#fff
+}
+textarea{min-height:90px;resize:vertical}
+table{width:100%;border-collapse:collapse}
+th,td{
+  padding:10px 8px;
+  border-bottom:1px solid #edf2fb;
+  text-align:left;
+  vertical-align:top;
+  font-size:14px
+}
+.stat-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+  gap:12px;
+  margin-top:14px
+}
+.stat{padding:16px}
+.n{font-size:26px;font-weight:900;margin-top:6px}
+.alert{
+  padding:12px 14px;
+  border-radius:16px;
+  margin-bottom:12px;
+  font-weight:700
+}
+.alert.err{background:#fff0f0;color:#b91c1c}
+.alert.ok{background:#edfdf1;color:#0a7a34}
+.badge{
+  display:inline-block;
+  background:#eaf1ff;
+  color:#1741a5;
+  border-radius:999px;
+  padding:5px 10px;
+  font-size:12px;
+  font-weight:800
+}
+.right{text-align:right}
+.label{font-size:13px;color:var(--muted);font-weight:700;margin-bottom:4px}
+.order-summary{
+  background:#f8fbff;
+  border:1px solid #e2ebf8;
+  border-radius:18px;
+  padding:14px
+}
 </style>
 </head>
 <body>
-<div class="top"><div><div class="brand">Kitob Market</div><div class="sub">Chiroyli vitrina + kuchli hisob</div></div>${adminChip}</div>
-<div class="wrap">${body}</div>
-</body></html>`;
+  <div class="top">
+    <div>
+      <div class="brand">Kitob Market</div>
+      <div class="sub">Chiroyli vitrina + kuchli hisob</div>
+    </div>
+    ${adminChip}
+  </div>
+  <div class="wrap">${body}</div>
+</body>
+</html>`;
 }
 
 async function initDb() {
@@ -149,17 +274,6 @@ async function initDb() {
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
   )`);
-  await q(`
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_name='books' AND column_name='price'
-  ) THEN
-    ALTER TABLE books DROP COLUMN price;
-  END IF;
-END $$;
-`);
 
   await q(`ALTER TABLE books ADD COLUMN IF NOT EXISTS author TEXT DEFAULT ''`);
   await q(`ALTER TABLE books ADD COLUMN IF NOT EXISTS image TEXT DEFAULT ''`);
@@ -170,6 +284,64 @@ END $$;
   await q(`ALTER TABLE books ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE`);
   await q(`ALTER TABLE books ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW()`);
   await q(`ALTER TABLE books ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW()`);
+
+  await q(`
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_name='books' AND column_name='image_url'
+  ) THEN
+    UPDATE books
+    SET image = COALESCE(NULLIF(image, ''), image_url)
+    WHERE COALESCE(image, '') = '';
+  END IF;
+END $$;
+`);
+
+  await q(`
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_name='books' AND column_name='price'
+  ) THEN
+    UPDATE books
+    SET
+      purchase_price = CASE WHEN COALESCE(purchase_price, 0) = 0 THEN COALESCE(price, 0) ELSE purchase_price END,
+      sale_price = CASE WHEN COALESCE(sale_price, 0) = 0 THEN COALESCE(price, 0) ELSE sale_price END
+    WHERE price IS NOT NULL;
+  END IF;
+END $$;
+`);
+
+  await q(`
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_name='books' AND column_name='price'
+  ) THEN
+    ALTER TABLE books DROP COLUMN price;
+  END IF;
+END $$;
+`);
+
+  await q(`
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_name='books' AND column_name='image_url'
+  ) THEN
+    ALTER TABLE books DROP COLUMN image_url;
+  END IF;
+END $$;
+`);
 
   await q(`CREATE TABLE IF NOT EXISTS purchases (
     id BIGSERIAL PRIMARY KEY,
@@ -185,11 +357,11 @@ END $$;
     id BIGSERIAL PRIMARY KEY,
     purchase_id BIGINT NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
     book_id BIGINT NOT NULL REFERENCES books(id) ON DELETE RESTRICT,
-    qty INT NOT NULL,
-    purchase_price BIGINT NOT NULL,
+    qty INT NOT NULL DEFAULT 1,
+    purchase_price BIGINT NOT NULL DEFAULT 0,
     markup_percent NUMERIC(10,2) NOT NULL DEFAULT 0,
-    sale_price BIGINT NOT NULL,
-    line_sum BIGINT NOT NULL
+    sale_price BIGINT NOT NULL DEFAULT 0,
+    line_sum BIGINT NOT NULL DEFAULT 0
   )`);
 
   await q(`CREATE TABLE IF NOT EXISTS customer_orders (
@@ -212,13 +384,13 @@ END $$;
     name TEXT PRIMARY KEY,
     last_value BIGINT NOT NULL DEFAULT 0
   )`);
+
   await q(`INSERT INTO counters(name,last_value) VALUES ('purchase',0) ON CONFLICT (name) DO NOTHING`);
 }
 
 async function nextPurchaseNo(client) {
   const r = await client.query(`UPDATE counters SET last_value=last_value+1 WHERE name='purchase' RETURNING last_value`);
-  const n = Number(r.rows[0].last_value);
-  return `PR-${String(n).padStart(6, "0")}`;
+  return `PR-${String(Number(r.rows[0].last_value)).padStart(6, "0")}`;
 }
 
 app.get("/", async (req, res, next) => {
@@ -239,9 +411,7 @@ app.get("/", async (req, res, next) => {
         <div class="muted">${esc(b.author || "")}</div>
         <div class="price">${money(b.sale_price)}</div>
         <div class="stock ok">Omborda: ${b.stock_qty} dona</div>
-        <div class="actions" style="margin-top:12px">
-          <a class="btn green" href="/order/${b.id}">Buyurtma berish</a>
-        </div>
+        <div class="actions" style="margin-top:12px"><a class="btn green" href="/order/${b.id}">Buyurtma berish</a></div>
       </div>
     `).join("") || `<div class="panel">Qidiruv bo'yicha kitob topilmadi</div>`;
 
@@ -259,152 +429,6 @@ app.get("/", async (req, res, next) => {
     `, { admin: isAdmin(req) }));
   } catch (e) {
     next(e);
-  }
-});
-
-app.get("/order/:id", async (req, res, next) => {
-  try {
-    const r = await q(`SELECT * FROM books WHERE id=$1 AND active=TRUE AND stock_qty > 0`, [Number(req.params.id)]);
-    if (!r.rows.length) return res.status(404).send("Topilmadi");
-    const b = r.rows[0];
-    res.send(page("Buyurtma", `
-      <div class="panel" style="max-width:760px;margin:0 auto">
-        <div class="actions" style="margin-bottom:10px"><a class="btn dark" href="/">← Ortga</a></div>
-        <h2>Buyurtma berish</h2>
-        <div class="card" style="margin-bottom:12px">
-          <div class="grid2">
-            <div class="book-image" style="height:240px">${b.image ? `<img src="${esc(b.image)}" alt="${esc(b.title)}" />` : "📚"}</div>
-            <div>
-              <div class="title" style="margin-top:0">${esc(b.title)}</div>
-              <div class="muted">${esc(b.author || "")}</div>
-              <div class="price">${money(b.sale_price)}</div>
-              <div class="stock ok">Omborda: ${b.stock_qty} dona</div>
-            </div>
-          </div>
-        </div>
-
-        <form class="form" method="post" action="/order/${b.id}">
-          <div class="grid2">
-            <div>
-              <div class="label">Ism</div>
-              <input name="customer_name" placeholder="Ismingiz" />
-            </div>
-            <div>
-              <div class="label">Telefon raqami</div>
-              <input name="phone" placeholder="99890..." required />
-            </div>
-          </div>
-          <div class="grid2">
-            <div>
-              <div class="label">Soni</div>
-              <input type="number" name="qty" min="1" max="${b.stock_qty}" value="1" id="qtyInput" required />
-            </div>
-            <div>
-              <div class="label">Lokatsiya</div>
-              <button type="button" class="btn soft" onclick="getLocation()">📍 Lokatsiyani yuborish</button>
-            </div>
-          </div>
-          <div>
-            <div class="label">Manzil</div>
-            <textarea name="address_text" id="addressText" placeholder="Manzil yoki mo'ljal"></textarea>
-          </div>
-          <input type="hidden" name="latitude" id="latField" />
-          <input type="hidden" name="longitude" id="lngField" />
-          <div class="order-summary">
-            <div class="grid2">
-              <div>Kitob narxi</div><div class="right">${money(b.sale_price)}</div>
-            </div>
-            <div class="grid2">
-              <div>Dostavka</div><div class="right">${money(DELIVERY_FEE)}</div>
-            </div>
-            <div class="grid2">
-              <div>Jami</div><div class="right" id="totalText">${money(Number(b.sale_price) + DELIVERY_FEE)}</div>
-            </div>
-            <div class="muted" style="margin-top:8px">Dostavka uchun alohida ${money(DELIVERY_FEE)} qo'shiladi</div>
-          </div>
-          <button type="submit" class="btn green">Zakaz berish</button>
-        </form>
-      </div>
-      <script>
-        const unitPrice = ${Number(b.sale_price)};
-        const deliveryFee = ${DELIVERY_FEE};
-        const qtyInput = document.getElementById('qtyInput');
-        const totalText = document.getElementById('totalText');
-        function updateTotal(){
-          const qty = Number(qtyInput.value || 1);
-          totalText.textContent = new Intl.NumberFormat('ru-RU').format((unitPrice * qty) + deliveryFee) + " so'm";
-        }
-        qtyInput.addEventListener('input', updateTotal);
-        updateTotal();
-        function getLocation(){
-          if(!navigator.geolocation){
-            alert('Geolokatsiya ishlamayapti');
-            return;
-          }
-          navigator.geolocation.getCurrentPosition(function(pos){
-            document.getElementById('latField').value = pos.coords.latitude;
-            document.getElementById('lngField').value = pos.coords.longitude;
-            alert('Lokatsiya saqlandi');
-          }, function(){
-            alert("Lokatsiyani olishning iloji bo'lmadi");
-          });
-        }
-      </script>
-    `, { admin: isAdmin(req) }));
-  } catch (e) {
-    next(e);
-  }
-});
-
-app.post("/order/:id", async (req, res, next) => {
-  const client = await pool.connect();
-  try {
-    const id = Number(req.params.id);
-    const qty = Math.max(1, Number(req.body.qty || 1));
-    await client.query("BEGIN");
-    const r = await client.query(`SELECT * FROM books WHERE id=$1 AND active=TRUE FOR UPDATE`, [id]);
-    if (!r.rows.length) throw new Error("Kitob topilmadi");
-    const b = r.rows[0];
-    if (b.stock_qty < qty) throw new Error("Omborda yetarli mahsulot yo'q");
-
-    const subtotal = Number(b.sale_price) * qty;
-    const total = subtotal + DELIVERY_FEE;
-
-    await client.query(
-      `INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, delivery_fee, subtotal, total_sum)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [
-        id,
-        qty,
-        String(req.body.customer_name || ""),
-        String(req.body.phone || ""),
-        String(req.body.address_text || ""),
-        String(req.body.latitude || ""),
-        String(req.body.longitude || ""),
-        DELIVERY_FEE,
-        subtotal,
-        total
-      ]
-    );
-
-    await client.query(`UPDATE books SET stock_qty = stock_qty - $1, updated_at=NOW() WHERE id=$2`, [qty, id]);
-    await client.query("COMMIT");
-
-    res.send(page("Buyurtma qabul qilindi", `
-      <div class="panel" style="max-width:720px;margin:0 auto">
-        <div class="alert ok">Buyurtmangiz qabul qilindi</div>
-        <h2>${esc(b.title)}</h2>
-        <div class="grid2"><div>Kitoblar summasi</div><div class="right">${money(subtotal)}</div></div>
-        <div class="grid2"><div>Dostavka</div><div class="right">${money(DELIVERY_FEE)}</div></div>
-        <div class="grid2"><div>Jami</div><div class="right"><b>${money(total)}</b></div></div>
-        <div class="actions" style="margin-top:12px"><a class="btn" href="/">Bosh sahifa</a></div>
-      </div>
-    `, { admin: isAdmin(req) }));
-  } catch (e) {
-    await client.query("ROLLBACK");
-    next(e);
-  } finally {
-    client.release();
   }
 });
 
@@ -429,7 +453,13 @@ app.post("/admin/login", (req, res) => {
       </div>
     `));
   }
-  res.cookie("admin", signedAdminValue(), { signed: true, httpOnly: true, sameSite: "lax", secure: true, maxAge: 1000 * 60 * 60 * 12 });
+  res.cookie("admin", signedAdminValue(), {
+    signed: true,
+    httpOnly: true,
+    sameSite: "lax",
+    secure: true,
+    maxAge: 1000 * 60 * 60 * 12,
+  });
   res.redirect("/admin");
 });
 
@@ -453,12 +483,11 @@ app.get("/admin", requireAdmin, async (_req, res, next) => {
     res.send(page("Admin", `
       <div class="panel">
         <div class="nav">
-          <a class="btn dark" href="/admin/books">Kitoblar</a>
           <a class="btn dark" href="/admin/counterparties">Kontragentlar</a>
           <a class="btn dark" href="/admin/purchases/new">Prihod qilish</a>
           <a class="btn dark" href="/admin/purchases">Prihodlar</a>
+          <a class="btn dark" href="/admin/books">Kitoblar</a>
           <a class="btn dark" href="/admin/orders">Zakazlar</a>
-          <a class="btn dark" href="/admin/reports">Hisobot</a>
           <a class="btn red" href="/admin/logout">Chiqish</a>
         </div>
         <h2 style="margin-top:14px">Boshqaruv paneli</h2>
@@ -472,33 +501,9 @@ app.get("/admin", requireAdmin, async (_req, res, next) => {
         </div>
       </div>
     `, { admin: true }));
-  } catch (e) { next(e); }
-});
-
-app.get("/admin/books", requireAdmin, async (_req, res, next) => {
-  try {
-    const r = await q(`SELECT * FROM books ORDER BY id DESC`);
-    const rows = r.rows.map((b) => `
-      <tr>
-        <td>${b.id}</td>
-        <td>${esc(b.title)}</td>
-        <td>${money(b.purchase_price)}</td>
-        <td>${b.markup_percent}%</td>
-        <td>${money(b.sale_price)}</td>
-        <td>${b.stock_qty}</td>
-      </tr>
-    `).join("");
-    res.send(page("Kitoblar", `
-      <div class="panel">
-        <div class="nav"><a class="btn dark" href="/admin">← Admin</a></div>
-        <h2>Kitoblar</h2>
-        <table>
-          <tr><th>ID</th><th>Nomi</th><th>Olingan narx</th><th>Pereocenka</th><th>Sotuv narxi</th><th>Qoldiq</th></tr>
-          ${rows || `<tr><td colspan="6">Ma'lumot yo'q</td></tr>`}
-        </table>
-      </div>
-    `, { admin: true }));
-  } catch (e) { next(e); }
+  } catch (e) {
+    next(e);
+  }
 });
 
 app.get("/admin/counterparties", requireAdmin, async (_req, res, next) => {
@@ -507,7 +512,10 @@ app.get("/admin/counterparties", requireAdmin, async (_req, res, next) => {
     const rows = r.rows.map((c) => `<tr><td>${c.id}</td><td>${esc(c.name)}</td><td>${esc(c.phone)}</td><td>${esc(c.note)}</td></tr>`).join("");
     res.send(page("Kontragentlar", `
       <div class="panel">
-        <div class="nav"><a class="btn" href="/admin/counterparties/new">+ Yangi kontragent</a><a class="btn dark" href="/admin">← Admin</a></div>
+        <div class="nav">
+          <a class="btn" href="/admin/counterparties/new">+ Yangi kontragent</a>
+          <a class="btn dark" href="/admin">← Admin</a>
+        </div>
         <h2>Kontragentlar</h2>
         <table>
           <tr><th>ID</th><th>Nomi</th><th>Telefon</th><th>Izoh</th></tr>
@@ -515,7 +523,9 @@ app.get("/admin/counterparties", requireAdmin, async (_req, res, next) => {
         </table>
       </div>
     `, { admin: true }));
-  } catch (e) { next(e); }
+  } catch (e) {
+    next(e);
+  }
 });
 
 app.get("/admin/counterparties/new", requireAdmin, (_req, res) => {
@@ -534,9 +544,15 @@ app.get("/admin/counterparties/new", requireAdmin, (_req, res) => {
 
 app.post("/admin/counterparties/new", requireAdmin, async (req, res, next) => {
   try {
-    await q(`INSERT INTO counterparties(name, phone, note) VALUES ($1,$2,$3)`, [req.body.name, req.body.phone || "", req.body.note || ""]);
+    await q(`INSERT INTO counterparties(name, phone, note) VALUES ($1,$2,$3)`, [
+      String(req.body.name || ""),
+      String(req.body.phone || ""),
+      String(req.body.note || "")
+    ]);
     res.redirect("/admin/counterparties");
-  } catch (e) { next(e); }
+  } catch (e) {
+    next(e);
+  }
 });
 
 app.get("/admin/purchases/new", requireAdmin, async (_req, res, next) => {
@@ -545,9 +561,13 @@ app.get("/admin/purchases/new", requireAdmin, async (_req, res, next) => {
     const books = (await q(`SELECT id,title FROM books ORDER BY title`)).rows;
     const cpOptions = cps.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join("");
     const bookOptions = books.map((b) => `<option value="${b.id}">${esc(b.title)}</option>`).join("");
+
     res.send(page("Prihod qilish", `
       <div class="panel" style="max-width:900px;margin:0 auto">
-        <div class="nav"><a class="btn dark" href="/admin">← Admin</a><a class="btn soft" href="/admin/counterparties/new">Avval kontragent qo'shish</a></div>
+        <div class="nav">
+          <a class="btn dark" href="/admin">← Admin</a>
+          <a class="btn soft" href="/admin/counterparties/new">Avval kontragent qo'shish</a>
+        </div>
         <h2>Prihod qilish</h2>
         <form class="form" method="post" action="/admin/purchases/new" enctype="multipart/form-data">
           <div class="grid2">
@@ -555,9 +575,8 @@ app.get("/admin/purchases/new", requireAdmin, async (_req, res, next) => {
               <option value="">Kontragent tanlang</option>
               ${cpOptions}
             </select>
-            <input type="date" name="doc_date" value="${new Date().toISOString().slice(0,10)}" required />
+            <input type="date" name="doc_date" value="${new Date().toISOString().slice(0, 10)}" required />
           </div>
-
           <div class="grid2">
             <select name="existing_book_id">
               <option value="">Mavjud kitobni tanlang (ixtiyoriy)</option>
@@ -565,28 +584,26 @@ app.get("/admin/purchases/new", requireAdmin, async (_req, res, next) => {
             </select>
             <input name="title" placeholder="Yoki yangi kitob nomi" />
           </div>
-
           <div class="grid2">
             <input name="author" placeholder="Muallif" />
             <input type="file" name="image" accept="image/*" />
           </div>
-
           <div class="grid2">
             <input type="number" name="qty" min="1" placeholder="Nechta olingan" required />
             <input type="number" name="purchase_price" min="0" placeholder="Nech pulga olingan (1 dona)" required />
           </div>
-
           <div class="grid2">
             <input type="number" step="0.01" name="markup_percent" min="0" placeholder="Pereocenka foizi" required />
             <input type="text" value="Sotuv narxi avtomatik hisoblanadi" disabled />
           </div>
-
           <textarea name="note" placeholder="Izoh"></textarea>
           <button type="submit" class="btn green">Saqlash</button>
         </form>
       </div>
     `, { admin: true }));
-  } catch (e) { next(e); }
+  } catch (e) {
+    next(e);
+  }
 });
 
 app.post("/admin/purchases/new", requireAdmin, upload.single("image"), async (req, res, next) => {
@@ -595,28 +612,34 @@ app.post("/admin/purchases/new", requireAdmin, upload.single("image"), async (re
     const qty = Number(req.body.qty || 0);
     const purchasePrice = Number(req.body.purchase_price || 0);
     const markupPercent = Number(req.body.markup_percent || 0);
-    if (qty <= 0) throw new Error("Soni noto'g'ri");
-    if (purchasePrice < 0) throw new Error("Narx noto'g'ri");
+
+    if (!Number.isFinite(qty) || qty <= 0) throw new Error("Soni noto'g'ri");
+    if (!Number.isFinite(purchasePrice) || purchasePrice < 0) throw new Error("Olingan narx noto'g'ri");
+    if (!Number.isFinite(markupPercent) || markupPercent < 0) throw new Error("Pereocenka foizi noto'g'ri");
 
     await client.query("BEGIN");
 
     let bookId = Number(req.body.existing_book_id || 0);
-    let imagePath = req.file ? `/uploads/${req.file.filename}` : "";
+    const imagePath = req.file ? `/uploads/${req.file.filename}` : "";
     const salePrice = Math.round(purchasePrice * (1 + markupPercent / 100));
     const lineSum = qty * purchasePrice;
 
     if (!bookId) {
       const title = String(req.body.title || "").trim();
       if (!title) throw new Error("Yangi kitob nomini kiriting yoki mavjud kitobni tanlang");
+
       const inserted = await client.query(
         `INSERT INTO books(title, author, image, purchase_price, markup_percent, sale_price, stock_qty, active)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE) RETURNING id`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE)
+         RETURNING id`,
         [title, String(req.body.author || ""), imagePath, purchasePrice, markupPercent, salePrice, qty]
       );
+
       bookId = inserted.rows[0].id;
     } else {
       const current = await client.query(`SELECT * FROM books WHERE id=$1 FOR UPDATE`, [bookId]);
       if (!current.rows.length) throw new Error("Kitob topilmadi");
+
       await client.query(
         `UPDATE books SET
           author = CASE WHEN $1 <> '' THEN $1 ELSE author END,
@@ -633,7 +656,9 @@ app.post("/admin/purchases/new", requireAdmin, upload.single("image"), async (re
 
     const docNo = await nextPurchaseNo(client);
     const purchase = await client.query(
-      `INSERT INTO purchases(doc_no, doc_date, counterparty_id, note, total_sum) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      `INSERT INTO purchases(doc_no, doc_date, counterparty_id, note, total_sum)
+       VALUES ($1,$2,$3,$4,$5)
+       RETURNING id`,
       [docNo, req.body.doc_date, req.body.counterparty_id, String(req.body.note || ""), lineSum]
     );
 
@@ -651,126 +676,6 @@ app.post("/admin/purchases/new", requireAdmin, upload.single("image"), async (re
   } finally {
     client.release();
   }
-});
-
-app.get("/admin/purchases", requireAdmin, async (_req, res, next) => {
-  try {
-    const r = await q(`SELECT p.*, COALESCE(c.name,'-') AS counterparty_name FROM purchases p LEFT JOIN counterparties c ON c.id=p.counterparty_id ORDER BY p.id DESC`);
-    const rows = r.rows.map((p) => `
-      <tr>
-        <td>${esc(p.doc_no)}</td><td>${esc(String(p.doc_date))}</td><td>${esc(p.counterparty_name)}</td><td>${money(p.total_sum)}</td>
-        <td><a class="btn soft" href="/admin/purchases/${p.id}">Ko'rish</a></td>
-      </tr>
-    `).join("");
-    res.send(page("Prihodlar", `
-      <div class="panel">
-        <div class="nav"><a class="btn" href="/admin/purchases/new">+ Prihod qilish</a><a class="btn dark" href="/admin">← Admin</a></div>
-        <h2>Prihodlar</h2>
-        <table><tr><th>№</th><th>Sana</th><th>Kontragent</th><th>Jami</th><th></th></tr>${rows || `<tr><td colspan="5">Prihod yo'q</td></tr>`}</table>
-      </div>
-    `, { admin: true }));
-  } catch (e) { next(e); }
-});
-
-app.get("/admin/purchases/:id", requireAdmin, async (req, res, next) => {
-  try {
-    const id = Number(req.params.id);
-    const h = await q(`SELECT p.*, COALESCE(c.name,'-') AS counterparty_name FROM purchases p LEFT JOIN counterparties c ON c.id=p.counterparty_id WHERE p.id=$1`, [id]);
-    if (!h.rows.length) return res.status(404).send("Topilmadi");
-    const p = h.rows[0];
-    const lines = await q(`SELECT pl.*, b.title FROM purchase_lines pl JOIN books b ON b.id=pl.book_id WHERE pl.purchase_id=$1`, [id]);
-    const rows = lines.rows.map((l) => `
-      <tr><td>${esc(l.title)}</td><td>${l.qty}</td><td>${money(l.purchase_price)}</td><td>${l.markup_percent}%</td><td>${money(l.sale_price)}</td><td>${money(l.line_sum)}</td></tr>
-    `).join("");
-    res.send(page("Prihod", `
-      <div class="panel">
-        <div class="nav"><a class="btn dark" href="/admin/purchases">← Prihodlar</a><a class="btn" href="/admin/purchases/${id}/pdf">PDF</a></div>
-        <h2>Prihod ${esc(p.doc_no)}</h2>
-        <div class="grid2"><div class="card"><b>Sana</b><br>${esc(String(p.doc_date))}</div><div class="card"><b>Kontragent</b><br>${esc(p.counterparty_name)}</div></div>
-        <table style="margin-top:12px"><tr><th>Kitob</th><th>Soni</th><th>Olingan narx</th><th>Pereocenka</th><th>Sotuv narxi</th><th>Summa</th></tr>${rows}</table>
-        <div class="right" style="margin-top:12px;font-size:20px;font-weight:900">Jami: ${money(p.total_sum)}</div>
-      </div>
-    `, { admin: true }));
-  } catch (e) { next(e); }
-});
-
-app.get("/admin/purchases/:id/pdf", requireAdmin, async (req, res, next) => {
-  try {
-    const id = Number(req.params.id);
-    const h = await q(`SELECT p.*, COALESCE(c.name,'-') AS counterparty_name FROM purchases p LEFT JOIN counterparties c ON c.id=p.counterparty_id WHERE p.id=$1`, [id]);
-    if (!h.rows.length) return res.status(404).send("Topilmadi");
-    const p = h.rows[0];
-    const lines = await q(`SELECT pl.*, b.title FROM purchase_lines pl JOIN books b ON b.id=pl.book_id WHERE pl.purchase_id=$1`, [id]);
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="${p.doc_no}.pdf"`);
-    const doc = new PDFDocument({ margin: 40 });
-    doc.pipe(res);
-    doc.fontSize(18).text("PRIHOD NAKLADNOY", { align: "center" });
-    doc.moveDown();
-    doc.text(`Hujjat: ${p.doc_no}`);
-    doc.text(`Sana: ${p.doc_date}`);
-    doc.text(`Kontragent: ${p.counterparty_name}`);
-    doc.moveDown();
-    lines.rows.forEach((l, i) => {
-      doc.text(`${i + 1}. ${l.title} | ${l.qty} dona | ${money(l.purchase_price)} | ${money(l.line_sum)}`);
-    });
-    doc.moveDown();
-    doc.text(`Jami: ${money(p.total_sum)}`, { align: "right" });
-    doc.end();
-  } catch (e) { next(e); }
-});
-
-app.get("/admin/orders", requireAdmin, async (_req, res, next) => {
-  try {
-    const r = await q(`
-      SELECT o.*, b.title
-      FROM customer_orders o
-      JOIN books b ON b.id=o.book_id
-      ORDER BY o.id DESC
-    `);
-    const rows = r.rows.map((o) => `
-      <tr>
-        <td>${o.id}</td>
-        <td>${esc(o.title)}</td>
-        <td>${o.qty}</td>
-        <td>${esc(o.customer_name || "-")}</td>
-        <td>${esc(o.phone)}</td>
-        <td>${money(o.delivery_fee)}</td>
-        <td>${money(o.total_sum)}</td>
-        <td>${esc(o.status)}</td>
-      </tr>
-    `).join("");
-    res.send(page("Zakazlar", `
-      <div class="panel">
-        <div class="nav"><a class="btn dark" href="/admin">← Admin</a></div>
-        <h2>Zakazlar</h2>
-        <table>
-          <tr><th>ID</th><th>Kitob</th><th>Soni</th><th>Mijoz</th><th>Telefon</th><th>Dostavka</th><th>Jami</th><th>Status</th></tr>
-          ${rows || `<tr><td colspan="8">Zakaz yo'q</td></tr>`}
-        </table>
-      </div>
-    `, { admin: true }));
-  } catch (e) { next(e); }
-});
-
-app.get("/admin/reports", requireAdmin, async (_req, res, next) => {
-  try {
-    const stock = await q(`SELECT title, stock_qty, sale_price, purchase_price FROM books ORDER BY title`);
-    const stockRows = stock.rows.map((b) => `
-      <tr><td>${esc(b.title)}</td><td>${b.stock_qty}</td><td>${money(b.purchase_price)}</td><td>${money(b.sale_price)}</td><td>${money(Number(b.stock_qty) * Number(b.sale_price || 0))}</td></tr>
-    `).join("");
-    res.send(page("Hisobot", `
-      <div class="panel">
-        <div class="nav"><a class="btn dark" href="/admin">← Admin</a></div>
-        <h2>Ostatka va hisobot</h2>
-        <table>
-          <tr><th>Kitob</th><th>Qoldiq</th><th>Olingan narx</th><th>Sotuv narxi</th><th>Qoldiq summasi</th></tr>
-          ${stockRows || `<tr><td colspan="5">Ma'lumot yo'q</td></tr>`}
-        </table>
-      </div>
-    `, { admin: true }));
-  } catch (e) { next(e); }
 });
 
 app.use((err, req, res, _next) => {
