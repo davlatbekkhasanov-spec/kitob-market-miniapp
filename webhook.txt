@@ -1,0 +1,1 @@
+https://api.telegram.org/bot8709186194:AAEtHgdtcxV86UTzUZKcWPVeLMIBnPL_gkk/setWebhook?url=https://kitob-market-miniapp-production.up.railway.app/telegram/webhook
