@@ -185,7 +185,7 @@ async function getBatchSummary(batch) {
   return {
     batch_id: batch,
     rows,
-    text: `🛒 Zakaz ${batch}\n${items}\n👤 Mijoz: ${first.customer_name || "-"}\n📞 Telefon: ${first.phone}\n🏠 Manzil: ${first.address_text || "-"}${locPart}${sourcePart}\n💵 Jami: ${money(total)}\n📌 Holat: ${status}`
+    text: `🛒 ${batch}\n${items}\n👤 Mijoz: ${first.customer_name || "-"}\n📞 Telefon: ${first.phone}\n🏠 Manzil: ${first.address_text || "-"}${locPart}${sourcePart}\n💵 Jami: ${money(total)}\n📌 Holat: ${status}`
   };
 }
 function page(title, body, opts = {}) {
