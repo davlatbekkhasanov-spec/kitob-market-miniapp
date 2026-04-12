@@ -66,8 +66,50 @@ function sourceMeta(code = "") {
   if (m[1] === "college") return { code: value, type: "college", name: `Kollej ${n}` };
   return { code: value, type: "center", name: `O'quv markaz ${n}` };
 }
-function batchId() { return `BATCH-${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
 function getSourceCode(req) { return String(req.query.source || req.cookies.source_code || req.body.source_code || "").trim(); }
+function extractLatLng(value = "") {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const pairRegexes = [
+    /[?&]q=(-?\d+(?:\.\d+)?)%2C(-?\d+(?:\.\d+)?)/i,
+    /[?&]q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+    /@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+    /(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/,
+  ];
+  for (const rx of pairRegexes) {
+    const m = text.match(rx);
+    if (!m) continue;
+    const lat = Number(m[1]);
+    const lng = Number(m[2]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) continue;
+    return { lat: String(lat), lng: String(lng) };
+  }
+  return null;
+}
+function resolveLocation(rawLat, rawLng, rawLocationUrl, rawAddress) {
+  let lat = String(rawLat || "").trim();
+  let lng = String(rawLng || "").trim();
+  let locationUrl = String(rawLocationUrl || "").trim();
+  const address = String(rawAddress || "").trim();
+
+  if (!lat || !lng) {
+    const fromUrl = extractLatLng(locationUrl);
+    if (fromUrl) {
+      lat = fromUrl.lat;
+      lng = fromUrl.lng;
+    }
+  }
+  if ((!lat || !lng) && address) {
+    const fromAddress = extractLatLng(address);
+    if (fromAddress) {
+      lat = fromAddress.lat;
+      lng = fromAddress.lng;
+    }
+  }
+  if (!locationUrl && lat && lng) locationUrl = buildLocationUrl(lat, lng);
+  return { lat, lng, locationUrl };
+}
 function cartSessionId(req, res) {
   let sid = String(req.signedCookies.cart_sid || "");
   if (!sid) {
@@ -123,7 +165,6 @@ function sourceBadge(sourceCode) {
 async function sendBatchToGroup(batch) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_GROUP_CHAT_ID) return null;
   const buttons = [[
-    { text: "🚚 Jarayonda", callback_data: `batch:${batch.batch_id}:in_progress` },
     { text: "✅ Yetkazildi", callback_data: `batch:${batch.batch_id}:delivered` },
     { text: "↩️ Vozvrat", callback_data: `batch:${batch.batch_id}:returned` }
   ]];
@@ -209,9 +250,15 @@ async function initDb() {
   await q(`INSERT INTO source_refs(code, type, name)
            SELECT 'center_' || gs::text, 'center', 'O''quv markaz ' || gs::text FROM generate_series(1,50) gs
            ON CONFLICT (code) DO NOTHING`);
-  await q(`CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY,last_value BIGINT NOT NULL DEFAULT 0)`); await q(`INSERT INTO counters(name,last_value) VALUES ('purchase',0) ON CONFLICT (name) DO NOTHING`);
+  await q(`CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY,last_value BIGINT NOT NULL DEFAULT 0)`);
+  await q(`INSERT INTO counters(name,last_value) VALUES ('purchase',0) ON CONFLICT (name) DO NOTHING`);
+  await q(`INSERT INTO counters(name,last_value) VALUES ('order',0) ON CONFLICT (name) DO NOTHING`);
 }
 async function nextPurchaseNo(client) { const r = await client.query(`UPDATE counters SET last_value=last_value+1 WHERE name='purchase' RETURNING last_value`); return `PR-${String(Number(r.rows[0].last_value)).padStart(6, "0")}`; }
+async function nextOrderBatchId(client) {
+  const r = await client.query(`UPDATE counters SET last_value=last_value+1 WHERE name='order' RETURNING last_value`);
+  return `Zakaz №${Number(r.rows[0].last_value)}`;
+}
 function buildLocationUrl(lat, lng) { return (!lat || !lng) ? "" : `https://maps.google.com/?q=${encodeURIComponent(lat)},${encodeURIComponent(lng)}`; }
 async function tg(method, payload) { if (!TELEGRAM_BOT_TOKEN) return null; const resp = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)}); return await resp.json().catch(() => null); }
 function telegramOrderText(order) { return order.text || ""; }
@@ -222,7 +269,6 @@ async function updateGroupOrderMessage(batch) {
   const first = summary.rows.find(x => x.telegram_message_id && x.telegram_chat_id);
   if (!first) return;
   const keyboard = summary.rows[0].status === "new" ? { inline_keyboard: [[
-    { text: "🚚 Jarayonda", callback_data: `batch:${summary.batch_id}:in_progress` },
     { text: "✅ Yetkazildi", callback_data: `batch:${summary.batch_id}:delivered` },
     { text: "↩️ Vozvrat", callback_data: `batch:${summary.batch_id}:returned` }
   ]] } : undefined;
@@ -284,17 +330,18 @@ app.get("/order/:id", async (req, res, next) => { try {
   const sourceCode = getSourceCode(req) || String(req.cookies.source_code || "");
   const sourceTag = sourceBadge(sourceCode);
   const count = await cartCount(req);
-  res.send(page("Buyurtma", `<div class="panel" style="max-width:780px;margin:0 auto"><div class="actions" style="margin-bottom:10px"><a class="btn dark" href="/">← Ortga</a><a class="btn soft" href="/cart">Savatcha (${count})</a></div><div class="card" style="margin-bottom:12px"><div class="grid2"><div class="book-image" style="height:300px">${b.image ? `<img src="${esc(b.image)}" alt="${esc(b.title)}" />` : "📚"}</div><div><div class="title" style="margin-top:0">${esc(b.title)}</div><div class="muted">${esc(b.author || "")}</div><div class="price">${money(b.sale_price)}</div><div class="stock ok">Mavjud: ${b.stock_qty} dona</div><div class="tag" style="margin-top:14px">Dostavka: ${money(DELIVERY_FEE)}</div><div style="margin-top:10px">${sourceTag}</div></div></div></div><form class="form" method="post" action="/order/${b.id}"><input type="hidden" name="source_code" value="${esc(sourceCode)}" /><div class="grid2"><input name="customer_name" placeholder="Ismingiz" /><input name="phone" placeholder="Telefon raqam" required /></div><div class="grid2"><input type="number" name="qty" min="1" max="${b.stock_qty}" value="1" id="qtyInput" required /><button type="button" class="btn soft" id="locBtn" onclick="getLocation()">📍 Lokatsiyani yuborish</button></div><input type="hidden" name="latitude" id="latField" /><input type="hidden" name="longitude" id="lngField" /><input type="hidden" name="location_url" id="locationUrlField" /><textarea name="address_text" id="addressText" placeholder="Manzil yoki lokatsiya havolasi"></textarea><div class="small" id="locText">Lokatsiya hali tanlanmadi</div><div class="order-summary"><div>1 dona narx: <b>${money(b.sale_price)}</b></div><div>Dostavka: <b>${money(DELIVERY_FEE)}</b></div><div style="margin-top:8px">Jami: <b id="totalText">${money(Number(b.sale_price) + DELIVERY_FEE)}</b></div></div><div class="actions"><button type="submit" class="btn green">Zakaz yuborish</button><button type="submit" formmethod="post" formaction="/cart/add/${b.id}" class="btn soft">Savatchaga qo'shish</button></div></form></div><script>const unitPrice=${Number(b.sale_price)};const deliveryFee=${DELIVERY_FEE};const qtyInput=document.getElementById('qtyInput');const totalText=document.getElementById('totalText');const latField=document.getElementById('latField');const lngField=document.getElementById('lngField');const locationUrlField=document.getElementById('locationUrlField');const locText=document.getElementById('locText');const locBtn=document.getElementById('locBtn');function updateTotal(){const qty=Number(qtyInput.value||1);const total=(qty*unitPrice)+deliveryFee;totalText.textContent=new Intl.NumberFormat('ru-RU').format(total)+" so'm";}qtyInput.addEventListener('input',updateTotal);updateTotal();function getLocation(){if(!navigator.geolocation){locText.textContent="Geolokatsiya ishlamayapti";return;}locBtn.disabled=true;locBtn.textContent='⏳ Lokatsiya olinmoqda...';navigator.geolocation.getCurrentPosition(function(pos){const lat=pos.coords.latitude;const lng=pos.coords.longitude;latField.value=lat;lngField.value=lng;locationUrlField.value="https://maps.google.com/?q="+lat+","+lng;locText.textContent="✅ Lokatsiya olindi: "+lat.toFixed(5)+", "+lng.toFixed(5);locBtn.textContent='✅ Tayyor';},function(){locBtn.disabled=false;locBtn.textContent='📍 Lokatsiyani yuborish';locText.textContent="❌ Lokatsiyani olishning iloji bo'lmadi";},{enableHighAccuracy:true,timeout:10000});}</script>`, { admin:isAdmin(req) }));
+  res.send(page("Buyurtma", `<div class="panel" style="max-width:780px;margin:0 auto"><div class="actions" style="margin-bottom:10px"><a class="btn dark" href="/">← Ortga</a><a class="btn soft" href="/cart">Savatcha (${count})</a></div><div class="card" style="margin-bottom:12px"><div class="grid2"><div class="book-image" style="height:300px">${b.image ? `<img src="${esc(b.image)}" alt="${esc(b.title)}" />` : "📚"}</div><div><div class="title" style="margin-top:0">${esc(b.title)}</div><div class="muted">${esc(b.author || "")}</div><div class="price">${money(b.sale_price)}</div><div class="stock ok">Mavjud: ${b.stock_qty} dona</div><div class="tag" style="margin-top:14px">Dostavka: ${money(DELIVERY_FEE)}</div><div style="margin-top:10px">${sourceTag}</div></div></div></div><form class="form" method="post" action="/order/${b.id}"><input type="hidden" name="source_code" value="${esc(sourceCode)}" /><div class="grid2"><input name="customer_name" placeholder="Ismingiz" /><input name="phone" placeholder="Telefon raqam" required /></div><div class="grid2"><input type="number" name="qty" min="1" max="${b.stock_qty}" value="1" id="qtyInput" required /><button type="button" class="btn soft" id="locBtn" onclick="getLocation()">📍 Lokatsiyani yuborish</button></div><input type="hidden" name="latitude" id="latField" /><input type="hidden" name="longitude" id="lngField" /><input type="hidden" name="location_url" id="locationUrlField" /><textarea name="address_text" id="addressText" placeholder="Manzil yoki lokatsiya havolasi"></textarea><div class="small" id="locText">Lokatsiya hali tanlanmadi</div><div class="order-summary"><div>1 dona narx: <b>${money(b.sale_price)}</b></div><div>Dostavka: <b>${money(DELIVERY_FEE)}</b></div><div style="margin-top:8px">Jami: <b id="totalText">${money(Number(b.sale_price) + DELIVERY_FEE)}</b></div></div><div class="actions"><button type="submit" class="btn green">Zakaz yuborish</button><button type="submit" formmethod="post" formaction="/cart/add/${b.id}" class="btn soft">Savatchaga qo'shish</button></div></form></div><script>const unitPrice=${Number(b.sale_price)};const deliveryFee=${DELIVERY_FEE};const qtyInput=document.getElementById('qtyInput');const totalText=document.getElementById('totalText');const latField=document.getElementById('latField');const lngField=document.getElementById('lngField');const locationUrlField=document.getElementById('locationUrlField');const locText=document.getElementById('locText');const locBtn=document.getElementById('locBtn');function updateTotal(){const qty=Number(qtyInput.value||1);const total=(qty*unitPrice)+deliveryFee;totalText.textContent=new Intl.NumberFormat('ru-RU').format(total)+" so'm";}qtyInput.addEventListener('input',updateTotal);updateTotal();function applyLocation(lat,lng,label){latField.value=lat;lngField.value=lng;locationUrlField.value="https://maps.google.com/?q="+lat+","+lng;try{localStorage.setItem('last_location_lat',String(lat));localStorage.setItem('last_location_lng',String(lng));}catch(_e){}locText.textContent=label||"✅ Lokatsiya olindi: "+Number(lat).toFixed(5)+", "+Number(lng).toFixed(5);locBtn.textContent='✅ Tayyor';}async function applyIpLocation(){const resp=await fetch('https://ipapi.co/json/');if(!resp.ok) throw new Error('IP lokatsiya xizmati ishlamadi');const data=await resp.json();if(!data||!data.latitude||!data.longitude) throw new Error('IP lokatsiya topilmadi');applyLocation(data.latitude,data.longitude,'✅ Lokatsiya olindi (taxminiy)');}function applySavedLocation(){try{const lat=localStorage.getItem('last_location_lat');const lng=localStorage.getItem('last_location_lng');if(lat&&lng){applyLocation(lat,lng,"✅ Oxirgi lokatsiya qo'llandi");return true;}}catch(_e){}return false;}function requestLocation(options,onError){navigator.geolocation.getCurrentPosition(function(pos){applyLocation(pos.coords.latitude,pos.coords.longitude);},onError,options);}function getLocation(){if(!navigator.geolocation){locText.textContent="Geolokatsiya yo'q. Lokatsiya taxminiy olinmoqda...";locBtn.disabled=true;locBtn.textContent='⏳ Lokatsiya olinmoqda...';applyIpLocation().catch(function(){locBtn.disabled=false;locBtn.textContent='📍 Lokatsiyani yuborish';locText.textContent="Lokatsiyani avtomatik olish bo'lmadi, manzilni yozing";});return;}locBtn.disabled=true;locBtn.textContent='⏳ Lokatsiya olinmoqda...';requestLocation({enableHighAccuracy:false,timeout:20000,maximumAge:60000},function(){requestLocation({enableHighAccuracy:true,timeout:30000,maximumAge:0},function(){if(applySavedLocation()) return;applyIpLocation().catch(function(){locBtn.disabled=false;locBtn.textContent='📍 Lokatsiyani yuborish';locText.textContent="Lokatsiyani avtomatik olish bo'lmadi, manzilni yozing";});});});}</script>`, { admin:isAdmin(req) }));
 } catch (e) { next(e); } });
 
 app.post("/order/:id", async (req, res, next) => { const client = await pool.connect(); try {
   const id=Number(req.params.id); const qty=Math.max(1, Number(req.body.qty||1)); await client.query("BEGIN");
   const r=await client.query(`SELECT * FROM books WHERE id=$1 AND active=TRUE FOR UPDATE`, [id]); if (!r.rows.length) throw new Error("Kitob topilmadi");
   const b=r.rows[0]; if (b.stock_qty<qty) throw new Error("Omborda yetarli mahsulot yo'q");
-  const subtotal=Number(b.sale_price)*qty; const total=subtotal+DELIVERY_FEE; const locationUrl=String(req.body.location_url || buildLocationUrl(req.body.latitude, req.body.longitude) || "");
+  const subtotal=Number(b.sale_price)*qty; const total=subtotal+DELIVERY_FEE;
+  const location = resolveLocation(req.body.latitude, req.body.longitude, req.body.location_url, req.body.address_text);
   const meta = sourceMeta(req.body.source_code || req.cookies.source_code || "");
-  const batch = batchId();
-  const inserted=await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`, [id, qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), String(req.body.latitude||""), String(req.body.longitude||""), locationUrl, DELIVERY_FEE, subtotal, total, batch, meta.code, meta.type, meta.name]);
+  const batch = await nextOrderBatchId(client);
+  const inserted=await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`, [id, qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, DELIVERY_FEE, subtotal, total, batch, meta.code, meta.type, meta.name]);
   await client.query(`UPDATE books SET stock_qty = stock_qty - $1, updated_at=NOW() WHERE id=$2`, [qty, id]);
   await client.query("COMMIT");
   const summary = await getBatchSummary(batch);
@@ -325,7 +372,7 @@ app.get("/cart", async (req, res, next) => { try {
   const subtotal = items.reduce((a, x) => a + Number(x.sale_price || 0) * Number(x.qty || 0), 0);
   const total = subtotal + (items.length ? DELIVERY_FEE : 0);
   const body = items.length ? items.map(cartItemHtml).join("") : `<div class="panel">Savatcha bo'sh</div>`;
-  res.send(page("Savatcha", `<div class="panel" style="max-width:900px;margin:0 auto"><div class="actions" style="margin-bottom:12px"><a class="btn dark" href="/">← Davom etish</a></div><h2>Savatcha</h2>${sourceBadge(sourceCode)}${body}${items.length ? `<form class="form" method="post" action="/checkout" style="margin-top:16px"><input type="hidden" name="source_code" value="${esc(sourceCode)}" /><div class="grid2"><input name="customer_name" placeholder="Ismingiz" /><input name="phone" placeholder="Telefon raqam" required /></div><div class="grid2"><button type="button" class="btn soft" id="cartLocBtn" onclick="getCartLocation()">📍 Lokatsiyani yuborish</button><div class="small" id="cartLocText">Lokatsiya hali tanlanmadi</div></div><input type="hidden" name="latitude" id="cartLatField" /><input type="hidden" name="longitude" id="cartLngField" /><input type="hidden" name="location_url" id="cartLocationUrlField" /><textarea name="address_text" placeholder="Manzil yoki lokatsiya havolasi"></textarea><div class="order-summary"><div>Mahsulotlar: <b>${money(subtotal)}</b></div><div>Dostavka: <b>${money(items.length ? DELIVERY_FEE : 0)}</b></div><div style="margin-top:8px">Jami: <b>${money(total)}</b></div></div><button class="btn green" type="submit">Bitta zakaz qilish</button></form><script>function getCartLocation(){const btn=document.getElementById('cartLocBtn');const text=document.getElementById('cartLocText');if(!navigator.geolocation){text.textContent="Geolokatsiya ishlamayapti";return;}btn.disabled=true;btn.textContent='⏳ Lokatsiya olinmoqda...';navigator.geolocation.getCurrentPosition(function(pos){document.getElementById('cartLatField').value=pos.coords.latitude;document.getElementById('cartLngField').value=pos.coords.longitude;document.getElementById('cartLocationUrlField').value='https://maps.google.com/?q='+pos.coords.latitude+','+pos.coords.longitude;text.textContent='✅ Lokatsiya olindi';btn.textContent='✅ Tayyor';},function(){btn.disabled=false;btn.textContent='📍 Lokatsiyani yuborish';text.textContent='❌ Xatolik';},{enableHighAccuracy:true,timeout:10000});}</script>` : ""}</div>`, { admin:isAdmin(req) }));
+  res.send(page("Savatcha", `<div class="panel" style="max-width:900px;margin:0 auto"><div class="actions" style="margin-bottom:12px"><a class="btn dark" href="/">← Davom etish</a></div><h2>Savatcha</h2>${sourceBadge(sourceCode)}${body}${items.length ? `<form class="form" method="post" action="/checkout" style="margin-top:16px"><input type="hidden" name="source_code" value="${esc(sourceCode)}" /><div class="grid2"><input name="customer_name" placeholder="Ismingiz" /><input name="phone" placeholder="Telefon raqam" required /></div><div class="grid2"><button type="button" class="btn soft" id="cartLocBtn" onclick="getCartLocation()">📍 Lokatsiyani yuborish</button><div class="small" id="cartLocText">Lokatsiya hali tanlanmadi</div></div><input type="hidden" name="latitude" id="cartLatField" /><input type="hidden" name="longitude" id="cartLngField" /><input type="hidden" name="location_url" id="cartLocationUrlField" /><textarea name="address_text" placeholder="Manzil yoki lokatsiya havolasi"></textarea><div class="order-summary"><div>Mahsulotlar: <b>${money(subtotal)}</b></div><div>Dostavka: <b>${money(items.length ? DELIVERY_FEE : 0)}</b></div><div style="margin-top:8px">Jami: <b>${money(total)}</b></div></div><button class="btn green" type="submit">Bitta zakaz qilish</button></form><script>function setCartLocation(lat,lng,label){document.getElementById('cartLatField').value=lat;document.getElementById('cartLngField').value=lng;document.getElementById('cartLocationUrlField').value='https://maps.google.com/?q='+lat+','+lng;try{localStorage.setItem('last_location_lat',String(lat));localStorage.setItem('last_location_lng',String(lng));}catch(_e){}document.getElementById('cartLocText').textContent=label||'✅ Lokatsiya olindi';document.getElementById('cartLocBtn').textContent='✅ Tayyor';}function applySavedCartLocation(){try{const lat=localStorage.getItem('last_location_lat');const lng=localStorage.getItem('last_location_lng');if(lat&&lng){setCartLocation(lat,lng,"✅ Oxirgi lokatsiya qo'llandi");return true;}}catch(_e){}return false;}async function applyCartIpLocation(){const resp=await fetch('https://ipapi.co/json/');if(!resp.ok) throw new Error('ip');const data=await resp.json();if(!data||!data.latitude||!data.longitude) throw new Error('ip');setCartLocation(data.latitude,data.longitude,'✅ Lokatsiya olindi (taxminiy)');}function getCartLocation(){const btn=document.getElementById('cartLocBtn');const text=document.getElementById('cartLocText');if(!navigator.geolocation){text.textContent="Geolokatsiya yo'q. Lokatsiya taxminiy olinmoqda...";btn.disabled=true;btn.textContent='⏳ Lokatsiya olinmoqda...';applyCartIpLocation().catch(function(){btn.disabled=false;btn.textContent='📍 Lokatsiyani yuborish';text.textContent="Lokatsiyani avtomatik olish bo'lmadi, manzilni yozing";});return;}btn.disabled=true;btn.textContent='⏳ Lokatsiya olinmoqda...';navigator.geolocation.getCurrentPosition(function(pos){setCartLocation(pos.coords.latitude,pos.coords.longitude);},function(){navigator.geolocation.getCurrentPosition(function(pos){setCartLocation(pos.coords.latitude,pos.coords.longitude);},function(){if(applySavedCartLocation()) return;applyCartIpLocation().catch(function(){btn.disabled=false;btn.textContent='📍 Lokatsiyani yuborish';text.textContent="Lokatsiyani avtomatik olish bo'lmadi, manzilni yozing";});},{enableHighAccuracy:true,timeout:30000,maximumAge:0});},{enableHighAccuracy:false,timeout:20000,maximumAge:60000});}</script>` : ""}</div>`, { admin:isAdmin(req) }));
 } catch (e) { next(e); } });
 
 app.post("/cart/update/:id", async (req, res, next) => { try {
@@ -353,7 +400,7 @@ app.post("/checkout", async (req, res, next) => { const client = await pool.conn
   const items = await client.query(`SELECT c.book_id, c.qty, b.title, b.sale_price, b.stock_qty FROM cart_items c JOIN books b ON b.id=c.book_id WHERE c.session_id=$1 AND b.active=TRUE ORDER BY c.id`, [sid]);
   if (!items.rows.length) throw new Error("Savatcha bo'sh");
   await client.query("BEGIN");
-  const batch = batchId();
+  const batch = await nextOrderBatchId(client);
   const meta = sourceMeta(req.body.source_code || req.cookies.source_code || "");
   let total = 0;
   for (let i=0;i<items.rows.length;i++) {
@@ -364,9 +411,9 @@ app.post("/checkout", async (req, res, next) => { const client = await pool.conn
     const delivery = i === 0 ? DELIVERY_FEE : 0;
     const lineTotal = subtotal + delivery;
     total += lineTotal;
-    const locationUrl = String(req.body.location_url || buildLocationUrl(req.body.latitude, req.body.longitude) || "");
+    const location = resolveLocation(req.body.latitude, req.body.longitude, req.body.location_url, req.body.address_text);
     await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, [item.book_id, item.qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), String(req.body.latitude||""), String(req.body.longitude||""), locationUrl, delivery, subtotal, lineTotal, batch, meta.code, meta.type, meta.name]);
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, [item.book_id, item.qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, delivery, subtotal, lineTotal, batch, meta.code, meta.type, meta.name]);
     await client.query(`UPDATE books SET stock_qty = stock_qty - $1, updated_at=NOW() WHERE id=$2`, [item.qty, item.book_id]);
   }
   await client.query(`DELETE FROM cart_items WHERE session_id=$1`, [sid]);
