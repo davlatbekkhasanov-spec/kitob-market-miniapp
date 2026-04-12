@@ -68,6 +68,49 @@ function sourceMeta(code = "") {
 }
 function batchId() { return `BATCH-${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
 function getSourceCode(req) { return String(req.query.source || req.cookies.source_code || req.body.source_code || "").trim(); }
+function extractLatLng(value = "") {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const pairRegexes = [
+    /[?&]q=(-?\d+(?:\.\d+)?)%2C(-?\d+(?:\.\d+)?)/i,
+    /[?&]q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+    /@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+    /(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/,
+  ];
+  for (const rx of pairRegexes) {
+    const m = text.match(rx);
+    if (!m) continue;
+    const lat = Number(m[1]);
+    const lng = Number(m[2]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) continue;
+    return { lat: String(lat), lng: String(lng) };
+  }
+  return null;
+}
+function resolveLocation(rawLat, rawLng, rawLocationUrl, rawAddress) {
+  let lat = String(rawLat || "").trim();
+  let lng = String(rawLng || "").trim();
+  let locationUrl = String(rawLocationUrl || "").trim();
+  const address = String(rawAddress || "").trim();
+
+  if (!lat || !lng) {
+    const fromUrl = extractLatLng(locationUrl);
+    if (fromUrl) {
+      lat = fromUrl.lat;
+      lng = fromUrl.lng;
+    }
+  }
+  if ((!lat || !lng) && address) {
+    const fromAddress = extractLatLng(address);
+    if (fromAddress) {
+      lat = fromAddress.lat;
+      lng = fromAddress.lng;
+    }
+  }
+  if (!locationUrl && lat && lng) locationUrl = buildLocationUrl(lat, lng);
+  return { lat, lng, locationUrl };
+}
 function cartSessionId(req, res) {
   let sid = String(req.signedCookies.cart_sid || "");
   if (!sid) {
@@ -291,10 +334,11 @@ app.post("/order/:id", async (req, res, next) => { const client = await pool.con
   const id=Number(req.params.id); const qty=Math.max(1, Number(req.body.qty||1)); await client.query("BEGIN");
   const r=await client.query(`SELECT * FROM books WHERE id=$1 AND active=TRUE FOR UPDATE`, [id]); if (!r.rows.length) throw new Error("Kitob topilmadi");
   const b=r.rows[0]; if (b.stock_qty<qty) throw new Error("Omborda yetarli mahsulot yo'q");
-  const subtotal=Number(b.sale_price)*qty; const total=subtotal+DELIVERY_FEE; const locationUrl=String(req.body.location_url || buildLocationUrl(req.body.latitude, req.body.longitude) || "");
+  const subtotal=Number(b.sale_price)*qty; const total=subtotal+DELIVERY_FEE;
+  const location = resolveLocation(req.body.latitude, req.body.longitude, req.body.location_url, req.body.address_text);
   const meta = sourceMeta(req.body.source_code || req.cookies.source_code || "");
   const batch = batchId();
-  const inserted=await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`, [id, qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), String(req.body.latitude||""), String(req.body.longitude||""), locationUrl, DELIVERY_FEE, subtotal, total, batch, meta.code, meta.type, meta.name]);
+  const inserted=await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`, [id, qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, DELIVERY_FEE, subtotal, total, batch, meta.code, meta.type, meta.name]);
   await client.query(`UPDATE books SET stock_qty = stock_qty - $1, updated_at=NOW() WHERE id=$2`, [qty, id]);
   await client.query("COMMIT");
   const summary = await getBatchSummary(batch);
@@ -364,9 +408,9 @@ app.post("/checkout", async (req, res, next) => { const client = await pool.conn
     const delivery = i === 0 ? DELIVERY_FEE : 0;
     const lineTotal = subtotal + delivery;
     total += lineTotal;
-    const locationUrl = String(req.body.location_url || buildLocationUrl(req.body.latitude, req.body.longitude) || "");
+    const location = resolveLocation(req.body.latitude, req.body.longitude, req.body.location_url, req.body.address_text);
     await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, [item.book_id, item.qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), String(req.body.latitude||""), String(req.body.longitude||""), locationUrl, delivery, subtotal, lineTotal, batch, meta.code, meta.type, meta.name]);
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, [item.book_id, item.qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, delivery, subtotal, lineTotal, batch, meta.code, meta.type, meta.name]);
     await client.query(`UPDATE books SET stock_qty = stock_qty - $1, updated_at=NOW() WHERE id=$2`, [item.qty, item.book_id]);
   }
   await client.query(`DELETE FROM cart_items WHERE session_id=$1`, [sid]);
