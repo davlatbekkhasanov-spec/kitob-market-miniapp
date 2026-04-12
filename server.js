@@ -316,7 +316,7 @@ app.get("/", async (req, res, next) => { try {
   const count = await cartCount(req);
   const sourceTag = sourceCode ? sourceBadge(sourceCode) : sourceBadge(req.cookies.source_code || "");
   const catOptions = categories.rows.map(c => `<option value="${c.id}" ${selectedCategoryId===Number(c.id) || categoryFilter===String(c.name) ? 'selected' : ''}>${esc(c.name)}</option>`).join("");
-  const cards = books.rows.map((b) => `<div class="card">
+  const cards = books.rows.map((b) => `<div class="card" data-category-id="${Number(b.category_id || 0)}">
       <div class="book-image">${b.image ? `<img src="${esc(b.image)}" alt="${esc(b.title)}" />` : "📚"}</div>
       <div class="title">${esc(b.title)}</div>
       <div class="muted">${esc(b.author || "")}</div>
@@ -328,7 +328,7 @@ app.get("/", async (req, res, next) => { try {
         <a class="btn green" href="/order/${b.id}">Buyurtma berish</a>
       </div>
     </div>`).join("") || `<div class="panel">Qidiruv bo'yicha mahsulot topilmadi</div>`;
-  res.send(page("Kitob Market", `<div class="hero"><h1>Kitoblar do'koni</h1><p>Sevimli kitoblaringizni tanlang — narxi va buyurtma qulay tarzda bir joyda</p>${sourceTag}<form class="searchbar" method="get" action="/" style="margin-top:12px"><input type="hidden" name="source" value="${esc(sourceCode || req.cookies.source_code || "")}" /><input type="text" name="search" value="${esc(search)}" placeholder="Kitob nomi yoki muallif bo'yicha qidiring" /><select name="category_id"><option value="">Barcha kategoriya</option>${catOptions}</select><button type="submit">Poisk</button><a class="btn soft" href="/cart">Savatcha (${count})</a></form></div><h2 style="margin-top:18px">Mavjud kitoblar</h2><div class="cards">${cards}</div>`, { admin:isAdmin(req) }));
+  res.send(page("Kitob Market", `<div class="hero"><h1>Kitoblar do'koni</h1><p>Sevimli kitoblaringizni tanlang — narxi va buyurtma qulay tarzda bir joyda</p>${sourceTag}<form class="searchbar" method="get" action="/" style="margin-top:12px" id="catalogFilterForm"><input type="hidden" name="source" value="${esc(sourceCode || req.cookies.source_code || "")}" /><input type="text" name="search" value="${esc(search)}" placeholder="Kitob nomi yoki muallif bo'yicha qidiring" /><select name="category_id" id="categorySelect"><option value="">Barcha kategoriya</option>${catOptions}</select><button type="submit">Poisk</button><a class="btn soft" href="/cart">Savatcha (${count})</a></form></div><h2 style="margin-top:18px">Mavjud kitoblar</h2><div class="cards">${cards}</div><script>(function(){const form=document.getElementById('catalogFilterForm');const category=document.getElementById('categorySelect');if(!form||!category)return;category.addEventListener('change',function(){form.submit();});})();</script>`, { admin:isAdmin(req) }));
 } catch (e) { next(e); } });
 
 app.get("/order/:id", async (req, res, next) => { try {
