@@ -306,11 +306,14 @@ app.post("/order/:id", async (req, res, next) => { const client = await pool.con
 app.post("/cart/add/:id", async (req, res, next) => { try {
   const sid = cartSessionId(req, res);
   const bookId = Number(req.params.id);
-  const qty = Math.max(1, Number(req.body.qty || 1));
+  const requestedQty = Math.max(1, Number(req.body.qty || 1));
   const book = await q(`SELECT id, stock_qty FROM books WHERE id=$1 AND active=TRUE`, [bookId]);
   if (!book.rows.length) throw new Error("Mahsulot topilmadi");
+  const availableQty = Number(book.rows[0].stock_qty || 0);
+  if (availableQty <= 0) throw new Error("Mahsulot omborda qolmagan");
+  const qty = Math.min(requestedQty, availableQty);
   await q(`INSERT INTO cart_items(session_id, book_id, qty) VALUES ($1,$2,$3)
-           ON CONFLICT(session_id, book_id) DO UPDATE SET qty = LEAST(cart_items.qty + EXCLUDED.qty, GREATEST(1,(SELECT stock_qty FROM books WHERE id=$2)))`, [sid, bookId, qty]);
+           ON CONFLICT(session_id, book_id) DO UPDATE SET qty = LEAST(cart_items.qty + EXCLUDED.qty, (SELECT stock_qty FROM books WHERE id=$2))`, [sid, bookId, qty]);
   if ((req.headers.referer || "").includes(`/order/${bookId}`)) return res.redirect("/cart");
   res.redirect("back");
 } catch (e) { next(e); } });
@@ -327,8 +330,15 @@ app.get("/cart", async (req, res, next) => { try {
 
 app.post("/cart/update/:id", async (req, res, next) => { try {
   const sid = cartSessionId(req, res);
-  const qty = Math.max(1, Number(req.body.qty || 1));
-  await q(`UPDATE cart_items SET qty=$1 WHERE session_id=$2 AND book_id=$3`, [qty, sid, Number(req.params.id)]);
+  const bookId = Number(req.params.id);
+  const requestedQty = Math.max(1, Number(req.body.qty || 1));
+  const book = await q(`SELECT stock_qty FROM books WHERE id=$1 AND active=TRUE`, [bookId]);
+  if (!book.rows.length || Number(book.rows[0].stock_qty || 0) <= 0) {
+    await q(`DELETE FROM cart_items WHERE session_id=$1 AND book_id=$2`, [sid, bookId]);
+    return res.redirect("/cart");
+  }
+  const qty = Math.min(requestedQty, Number(book.rows[0].stock_qty || 0));
+  await q(`UPDATE cart_items SET qty=$1 WHERE session_id=$2 AND book_id=$3`, [qty, sid, bookId]);
   res.redirect("/cart");
 } catch (e) { next(e); } });
 
