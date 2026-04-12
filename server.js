@@ -66,7 +66,6 @@ function sourceMeta(code = "") {
   if (m[1] === "college") return { code: value, type: "college", name: `Kollej ${n}` };
   return { code: value, type: "center", name: `O'quv markaz ${n}` };
 }
-function batchId() { return `BATCH-${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
 function getSourceCode(req) { return String(req.query.source || req.cookies.source_code || req.body.source_code || "").trim(); }
 function extractLatLng(value = "") {
   const text = String(value || "").trim();
@@ -166,7 +165,6 @@ function sourceBadge(sourceCode) {
 async function sendBatchToGroup(batch) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_GROUP_CHAT_ID) return null;
   const buttons = [[
-    { text: "🚚 Jarayonda", callback_data: `batch:${batch.batch_id}:in_progress` },
     { text: "✅ Yetkazildi", callback_data: `batch:${batch.batch_id}:delivered` },
     { text: "↩️ Vozvrat", callback_data: `batch:${batch.batch_id}:returned` }
   ]];
@@ -252,9 +250,15 @@ async function initDb() {
   await q(`INSERT INTO source_refs(code, type, name)
            SELECT 'center_' || gs::text, 'center', 'O''quv markaz ' || gs::text FROM generate_series(1,50) gs
            ON CONFLICT (code) DO NOTHING`);
-  await q(`CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY,last_value BIGINT NOT NULL DEFAULT 0)`); await q(`INSERT INTO counters(name,last_value) VALUES ('purchase',0) ON CONFLICT (name) DO NOTHING`);
+  await q(`CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY,last_value BIGINT NOT NULL DEFAULT 0)`);
+  await q(`INSERT INTO counters(name,last_value) VALUES ('purchase',0) ON CONFLICT (name) DO NOTHING`);
+  await q(`INSERT INTO counters(name,last_value) VALUES ('order',0) ON CONFLICT (name) DO NOTHING`);
 }
 async function nextPurchaseNo(client) { const r = await client.query(`UPDATE counters SET last_value=last_value+1 WHERE name='purchase' RETURNING last_value`); return `PR-${String(Number(r.rows[0].last_value)).padStart(6, "0")}`; }
+async function nextOrderBatchId(client) {
+  const r = await client.query(`UPDATE counters SET last_value=last_value+1 WHERE name='order' RETURNING last_value`);
+  return `Zakaz №${Number(r.rows[0].last_value)}`;
+}
 function buildLocationUrl(lat, lng) { return (!lat || !lng) ? "" : `https://maps.google.com/?q=${encodeURIComponent(lat)},${encodeURIComponent(lng)}`; }
 async function tg(method, payload) { if (!TELEGRAM_BOT_TOKEN) return null; const resp = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)}); return await resp.json().catch(() => null); }
 function telegramOrderText(order) { return order.text || ""; }
@@ -265,7 +269,6 @@ async function updateGroupOrderMessage(batch) {
   const first = summary.rows.find(x => x.telegram_message_id && x.telegram_chat_id);
   if (!first) return;
   const keyboard = summary.rows[0].status === "new" ? { inline_keyboard: [[
-    { text: "🚚 Jarayonda", callback_data: `batch:${summary.batch_id}:in_progress` },
     { text: "✅ Yetkazildi", callback_data: `batch:${summary.batch_id}:delivered` },
     { text: "↩️ Vozvrat", callback_data: `batch:${summary.batch_id}:returned` }
   ]] } : undefined;
@@ -397,7 +400,7 @@ app.post("/checkout", async (req, res, next) => { const client = await pool.conn
   const items = await client.query(`SELECT c.book_id, c.qty, b.title, b.sale_price, b.stock_qty FROM cart_items c JOIN books b ON b.id=c.book_id WHERE c.session_id=$1 AND b.active=TRUE ORDER BY c.id`, [sid]);
   if (!items.rows.length) throw new Error("Savatcha bo'sh");
   await client.query("BEGIN");
-  const batch = batchId();
+  const batch = await nextOrderBatchId(client);
   const meta = sourceMeta(req.body.source_code || req.cookies.source_code || "");
   let total = 0;
   for (let i=0;i<items.rows.length;i++) {
