@@ -302,19 +302,20 @@ app.get("/", async (req, res, next) => { try {
   cartSessionId(req, res);
   const search = String(req.query.search || "").trim();
   const categoryFilter = String(req.query.category_id || "").trim();
+  let selectedCategoryId = 0;
+  if (categoryFilter) {
+    const selectedCategory = await q(`SELECT id FROM categories WHERE id::text=$1 OR name=$1 LIMIT 1`, [categoryFilter]);
+    selectedCategoryId = Number(selectedCategory.rows[0]?.id || 0);
+  }
   const params = [];
   let where = `WHERE b.active = TRUE AND b.stock_qty > 0`;
   if (search) { params.push(`%${search}%`); where += ` AND (b.title ILIKE $${params.length} OR b.author ILIKE $${params.length})`; }
-  if (categoryFilter) {
-    params.push(categoryFilter);
-    const isNumericCategory = /^\d+$/.test(categoryFilter);
-    where += isNumericCategory ? ` AND b.category_id = $${params.length}` : ` AND c.name = $${params.length}`;
-  }
+  if (selectedCategoryId) { params.push(selectedCategoryId); where += ` AND b.category_id = $${params.length}`; }
   const books = await q(`SELECT b.*, c.name AS category_name FROM books b LEFT JOIN categories c ON c.id=b.category_id ${where} ORDER BY b.id DESC`, params);
   const categories = await q(`SELECT * FROM categories ORDER BY name`);
   const count = await cartCount(req);
   const sourceTag = sourceCode ? sourceBadge(sourceCode) : sourceBadge(req.cookies.source_code || "");
-  const catOptions = categories.rows.map(c => `<option value="${esc(c.name)}" ${categoryFilter===String(c.name) || categoryFilter===String(c.id) ? 'selected' : ''}>${esc(c.name)}</option>`).join("");
+  const catOptions = categories.rows.map(c => `<option value="${c.id}" ${selectedCategoryId===Number(c.id) || categoryFilter===String(c.name) ? 'selected' : ''}>${esc(c.name)}</option>`).join("");
   const cards = books.rows.map((b) => `<div class="card">
       <div class="book-image">${b.image ? `<img src="${esc(b.image)}" alt="${esc(b.title)}" />` : "📚"}</div>
       <div class="title">${esc(b.title)}</div>
