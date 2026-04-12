@@ -66,6 +66,7 @@ function sourceMeta(code = "") {
   if (m[1] === "college") return { code: value, type: "college", name: `Kollej ${n}` };
   return { code: value, type: "center", name: `O'quv markaz ${n}` };
 }
+function batchIdFallback() { return `Zakaz №${Date.now()}`; }
 function batchId() { return `Zakaz №${Date.now()}`; }
 function getSourceCode(req) { return String(req.query.source || req.cookies.source_code || req.body.source_code || "").trim(); }
 function extractLatLng(value = "") {
@@ -255,17 +256,12 @@ async function initDb() {
   await q(`INSERT INTO counters(name,last_value) VALUES ('purchase',0) ON CONFLICT (name) DO NOTHING`);
   await q(`INSERT INTO counters(name,last_value) VALUES ('order',0) ON CONFLICT (name) DO NOTHING`);
 }
-async function nextPurchaseNo(client) { const r = await client.query(`UPDATE counters SET last_value=last_value+1 WHERE name='purchase' RETURNING last_value`); return `PR-${String(Number(r.rows[0].last_value)).padStart(6, "0")}`; }
+async function nextPurchaseNo(client) { const counter = await client.query(`UPDATE counters SET last_value=last_value+1 WHERE name='purchase' RETURNING last_value`); return `PR-${String(Number(counter.rows[0].last_value)).padStart(6, "0")}`; }
 async function nextOrderBatchId(client) {
-  let r = await client.query(`UPDATE counters SET last_value=last_value+1 WHERE name='order' RETURNING last_value`);
-  if (!r.rows.length) {
-    await client.query(`INSERT INTO counters(name,last_value) VALUES ('order',0) ON CONFLICT (name) DO NOTHING`);
-    r = await client.query(`UPDATE counters SET last_value=last_value+1 WHERE name='order' RETURNING last_value`);
-  }
-  const value = Number(r.rows[0]?.last_value || 0);
-  return value > 0 ? `Zakaz №${value}` : batchId();
-  const r = await client.query(`UPDATE counters SET last_value=last_value+1 WHERE name='order' RETURNING last_value`);
-  return `Zakaz №${Number(r.rows[0].last_value)}`;
+  await client.query(`INSERT INTO counters(name,last_value) VALUES ('order',0) ON CONFLICT (name) DO NOTHING`);
+  const counter = await client.query(`UPDATE counters SET last_value=last_value+1 WHERE name='order' RETURNING last_value`);
+  const value = Number(counter.rows[0]?.last_value || 0);
+  return value > 0 ? `Zakaz №${value}` : batchIdFallback();
 }
 function buildLocationUrl(lat, lng) { return (!lat || !lng) ? "" : `https://maps.google.com/?q=${encodeURIComponent(lat)},${encodeURIComponent(lng)}`; }
 async function tg(method, payload) { if (!TELEGRAM_BOT_TOKEN) return null; const resp = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)}); return await resp.json().catch(() => null); }
@@ -350,7 +346,6 @@ app.post("/order/:id", async (req, res, next) => { const client = await pool.con
   const location = resolveLocation(req.body.latitude, req.body.longitude, req.body.location_url, req.body.address_text);
   const meta = sourceMeta(req.body.source_code || req.cookies.source_code || "");
   const batch = await nextOrderBatchId(client);
-  const batch = batchId();
   const inserted=await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`, [id, qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, DELIVERY_FEE, subtotal, total, batch, meta.code, meta.type, meta.name]);
   await client.query(`UPDATE books SET stock_qty = stock_qty - $1, updated_at=NOW() WHERE id=$2`, [qty, id]);
   await client.query("COMMIT");
