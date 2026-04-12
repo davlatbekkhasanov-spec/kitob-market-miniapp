@@ -67,7 +67,6 @@ function sourceMeta(code = "") {
   return { code: value, type: "center", name: `O'quv markaz ${n}` };
 }
 function batchIdFallback() { return `Zakaz №${Date.now()}`; }
-function batchId() { return `Zakaz №${Date.now()}`; }
 function getSourceCode(req) { return String(req.query.source || req.cookies.source_code || req.body.source_code || "").trim(); }
 function extractLatLng(value = "") {
   const text = String(value || "").trim();
@@ -302,16 +301,16 @@ app.get("/", async (req, res, next) => { try {
   }
   cartSessionId(req, res);
   const search = String(req.query.search || "").trim();
-  const categoryId = Number(req.query.category_id || 0);
+  const categoryFilter = String(req.query.category_id || "").trim();
   const params = [];
   let where = `WHERE b.active = TRUE AND b.stock_qty > 0`;
   if (search) { params.push(`%${search}%`); where += ` AND (b.title ILIKE $${params.length} OR b.author ILIKE $${params.length})`; }
-  if (categoryId) { params.push(categoryId); where += ` AND b.category_id = $${params.length}`; }
+  if (categoryFilter) { params.push(categoryFilter); where += ` AND (b.category_id::text = $${params.length} OR c.name = $${params.length})`; }
   const books = await q(`SELECT b.*, c.name AS category_name FROM books b LEFT JOIN categories c ON c.id=b.category_id ${where} ORDER BY b.id DESC`, params);
   const categories = await q(`SELECT * FROM categories ORDER BY name`);
   const count = await cartCount(req);
   const sourceTag = sourceCode ? sourceBadge(sourceCode) : sourceBadge(req.cookies.source_code || "");
-  const catOptions = categories.rows.map(c => `<option value="${c.id}" ${categoryId===Number(c.id)?'selected':''}>${esc(c.name)}</option>`).join("");
+  const catOptions = categories.rows.map(c => `<option value="${c.id}" ${categoryFilter===String(c.id) || categoryFilter===String(c.name) ? 'selected' : ''}>${esc(c.name)}</option>`).join("");
   const cards = books.rows.map((b) => `<div class="card">
       <div class="book-image">${b.image ? `<img src="${esc(b.image)}" alt="${esc(b.title)}" />` : "📚"}</div>
       <div class="title">${esc(b.title)}</div>
