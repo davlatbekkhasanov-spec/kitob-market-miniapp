@@ -17,6 +17,7 @@ const APP_URL = process.env.APP_URL || "https://kitob-market-miniapp-production.
 const IMGBB_API_KEY = process.env.IMGBB_API_KEY || "08fc0452211bdc806ac49694254bc485";
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID || "";
+const TELEGRAM_BOT_USERNAME = process.env.TELEGRAM_BOT_USERNAME || "";
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || "";
@@ -50,11 +51,41 @@ app.use("/uploads", express.static(UPLOAD_DIR));
 function q(text, params = []) { return pool.query(text, params); }
 function esc(value = "") { return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;"); }
 function money(v) { return Number(v || 0).toLocaleString("ru-RU") + " so'm"; }
+function dateUz(v) {
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v || "");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yy = d.getFullYear();
+  return `${dd}.${mm}.${yy}`;
+}
+function pickPdfFontPath(name) {
+  const candidates = [
+    path.join(__dirname, "fonts", name),
+    path.join("/usr/share/fonts/truetype/dejavu", name),
+    path.join("/usr/share/fonts", name),
+  ];
+  return candidates.find((p) => fs.existsSync(p)) || "";
+}
 function signedAdminValue() { return crypto.createHash("sha256").update(`${ADMIN_PIN}|${SESSION_SECRET}`).digest("hex"); }
 function isAdmin(req) { return req.signedCookies.admin === signedAdminValue(); }
 function requireAdmin(req, res, next) { if (!isAdmin(req)) return res.redirect("/admin/login"); next(); }
 function isSecureRequest(req) { return req.secure || req.headers["x-forwarded-proto"] === "https"; }
+function ensureBindToken(req, res) {
+  const existing = String(req.signedCookies.tg_bind_token || "").trim();
+  if (existing) return existing;
+  const token = crypto.randomBytes(12).toString("hex");
+  res.cookie("tg_bind_token", token, { httpOnly: true, signed: true, sameSite: "lax", secure: isSecureRequest(req), maxAge: 1000 * 60 * 60 * 24 * 30 });
+  return token;
+}
 function statusLabel(status) { return ({ new: "Yangi", in_progress: "Jarayonda", delivered: "Yetkazildi", returned: "Vozvrat" })[String(status||"")] || String(status||""); }
+function normalizeTelegramTarget(value = "") {
+  const v = String(value || "").trim();
+  if (!v) return "";
+  if (/^-?\d+$/.test(v)) return v;
+  if (v.startsWith("@")) return v;
+  return v.startsWith("https://t.me/") ? `@${v.split("/").pop()}` : `@${v.replace(/^@+/, "")}`;
+}
 
 function sourceMeta(code = "") {
   const value = String(code || "").trim();
@@ -181,10 +212,11 @@ async function getBatchSummary(batch) {
   const locPart = first.location_url ? `\n📍 Lokatsiya: ${first.location_url}` : "";
   const total = rows.reduce((a, x) => a + Number(x.total_sum || 0), 0);
   const status = statusLabel(first.status);
+  const receiptPart = first.status === "delivered" && rows.some((x) => x.receipt_sent) ? " | 🧾 Chek yuborildi" : "";
   return {
     batch_id: batch,
     rows,
-    text: `🛒 ${batch}\n${items}\n👤 Mijoz: ${first.customer_name || "-"}\n📞 Telefon: ${first.phone}\n🏠 Manzil: ${first.address_text || "-"}${locPart}${sourcePart}\n💵 Jami: ${money(total)}\n📌 Holat: ${status}`
+    text: `🛒 ${batch}\n${items}\n👤 Mijoz: ${first.customer_name || "-"}\n📞 Telefon: ${first.phone}\n🏠 Manzil: ${first.address_text || "-"}${locPart}${sourcePart}\n💵 Jami: ${money(total)}\n📌 Holat: ${status}${receiptPart}`
   };
 }
 function page(title, body, opts = {}) {
@@ -197,26 +229,45 @@ function extFromMime(mime = "") { if (mime.includes("png")) return ".png"; if (m
 async function saveImage(file) {
   if (!file) return "";
 
-  const apiKey = IMGBB_API_KEY;
-  const base64 = file.buffer.toString("base64");
-
-  const resp = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      image: base64,
-    }),
-  });
-
-  const data = await resp.json();
-
-  if (data.success && data.data && data.data.url) {
-    return data.data.url;
+  if (HAS_CLOUDINARY) {
+    try {
+      const uploaded = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: CLOUDINARY_FOLDER, resource_type: "image" },
+          (err, result) => (err ? reject(err) : resolve(result)),
+        );
+        stream.end(file.buffer);
+      });
+      if (uploaded && uploaded.secure_url) {
+        return uploaded.secure_url;
+      }
+    } catch (_e) {
+      // Cloudinary ishlamasa, ImgBB va local fallbackga o'tamiz.
+    }
   }
 
-  throw new Error("ImgBB upload xatolik");
+  if (IMGBB_API_KEY) {
+    try {
+      const base64 = file.buffer.toString("base64");
+      const resp = await fetch(`https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ image: base64 }),
+      });
+      const data = await resp.json();
+      if (resp.ok && data.success && data.data && data.data.url) {
+        return data.data.url;
+      }
+    } catch (_e) {
+      // ImgBB ham ishlamasa local fallbackga o'tamiz.
+    }
+  }
+
+  // Railway kabi ephemeral diskda restartdan keyin local fayllar yo'qolib qolishi mumkin.
+  // Shuning uchun oxirgi fallback sifatida rasmni data URL ko'rinishida DBga saqlaymiz.
+  const mime = file.mimetype || "image/jpeg";
+  const base64 = file.buffer.toString("base64");
+  return `data:${mime};base64,${base64}`;
 }
 async function initDb() {
   await q(`CREATE TABLE IF NOT EXISTS counterparties (id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,phone TEXT DEFAULT '',note TEXT DEFAULT '',created_at TIMESTAMP NOT NULL DEFAULT NOW())`);
@@ -236,6 +287,10 @@ async function initDb() {
   await q(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS source_code TEXT DEFAULT ''`);
   await q(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT ''`);
   await q(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS source_name TEXT DEFAULT ''`);
+  await q(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS customer_telegram TEXT DEFAULT ''`);
+  await q(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS receipt_sent BOOLEAN NOT NULL DEFAULT FALSE`);
+  await q(`CREATE TABLE IF NOT EXISTS pending_feedback (chat_id TEXT PRIMARY KEY, order_id BIGINT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT NOW())`);
+  await q(`CREATE TABLE IF NOT EXISTS telegram_bindings (token TEXT PRIMARY KEY, chat_id TEXT NOT NULL, username TEXT DEFAULT '', created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW())`);
   await q(`CREATE TABLE IF NOT EXISTS categories (id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL UNIQUE,created_at TIMESTAMP NOT NULL DEFAULT NOW())`);
   await q(`ALTER TABLE books ADD COLUMN IF NOT EXISTS category_id BIGINT REFERENCES categories(id)`);
   await q(`INSERT INTO categories(name) VALUES ('Kitob'),('Konstovar') ON CONFLICT (name) DO NOTHING`);
@@ -277,17 +332,68 @@ async function updateGroupOrderMessage(batch) {
   ]] } : undefined;
   await tg("editMessageText", { chat_id: first.telegram_chat_id, message_id: first.telegram_message_id, text: summary.text, reply_markup: keyboard, disable_web_page_preview: false });
 }
+async function sendReceiptNotifications(batch) {
+  const r = await q(`SELECT id, customer_name, customer_telegram, subtotal FROM customer_orders WHERE batch_id=$1 ORDER BY id`, [batch]);
+  for (const order of r.rows) {
+    const target = normalizeTelegramTarget(order.customer_telegram || "");
+    if (!target) continue;
+    const text = `🧾 Xarid cheki tayyor\nZakaz #${order.id}\nJami to'lov: ${money(order.subtotal)}\n\nTalab va takliflar bo'lsa, pastdagi tugmani bosing.`;
+    const sent = await tg("sendMessage", {
+      chat_id: target,
+      text,
+      reply_markup: { inline_keyboard: [[{ text: "✍️ Talab va taklif yuborish", callback_data: `feedback:${order.id}` }]] }
+    });
+    if (sent && sent.ok) {
+      await q(`UPDATE customer_orders SET receipt_sent=TRUE WHERE id=$1`, [order.id]);
+    }
+  }
+}
 app.post("/telegram/webhook", async (req, res) => {
   try {
     const update = req.body || {};
     if (update.callback_query && update.callback_query.data) {
-      const m = String(update.callback_query.data).match(/^batch:([^:]+):(in_progress|delivered|returned)$/);
+      const data = String(update.callback_query.data);
+      const m = data.match(/^batch:(.+):(delivered|returned)$/);
       if (m) {
         const batch = m[1];
         const status = m[2];
         await q(`UPDATE customer_orders SET status=$1 WHERE batch_id=$2`, [status, batch]);
+        if (status === "delivered") await sendReceiptNotifications(batch);
         await updateGroupOrderMessage(batch);
         await tg("answerCallbackQuery", { callback_query_id: update.callback_query.id, text: `Holat: ${statusLabel(status)}` });
+      } else {
+        const fb = data.match(/^feedback:(\d+)$/);
+        if (fb) {
+          const orderId = Number(fb[1]);
+          const chatId = String(update.callback_query.from?.id || "");
+          if (chatId) {
+            await q(`INSERT INTO pending_feedback(chat_id, order_id) VALUES ($1,$2) ON CONFLICT (chat_id) DO UPDATE SET order_id=EXCLUDED.order_id, created_at=NOW()`, [chatId, orderId]);
+            await tg("sendMessage", { chat_id: chatId, text: "Iltimos, taklif yoki shikoyatingizni bitta xabar qilib yozing. Biz uni guruhga yuboramiz." });
+          }
+          await tg("answerCallbackQuery", { callback_query_id: update.callback_query.id, text: "Fikringizni yozing ✍️" });
+        }
+      }
+    }
+    if (update.message && update.message.text && update.message.chat && update.message.chat.type === "private") {
+      const chatId = String(update.message.chat.id);
+      const txt = String(update.message.text || "").trim();
+      const startMatch = txt.match(/^\/start\s+verify_([a-f0-9]{24})$/i);
+      if (startMatch) {
+        const token = startMatch[1];
+        await q(`INSERT INTO telegram_bindings(token, chat_id, username) VALUES ($1,$2,$3)
+                 ON CONFLICT (token) DO UPDATE SET chat_id=EXCLUDED.chat_id, username=EXCLUDED.username, updated_at=NOW()`,
+        [token, chatId, String(update.message.from?.username ? `@${update.message.from.username}` : "")]);
+        await tg("sendMessage", { chat_id: chatId, text: "✅ Shaxsingiz tasdiqlandi. Endi zakaz qilganingizda chek avtomatik yuboriladi." });
+      }
+      const pending = await q(`SELECT order_id FROM pending_feedback WHERE chat_id=$1`, [chatId]);
+      if (pending.rows.length) {
+        const orderId = pending.rows[0].order_id;
+        const text = txt;
+        if (text) {
+          await tg("sendMessage", { chat_id: TELEGRAM_GROUP_CHAT_ID, text: `💬 Mijoz fikri (order #${orderId}):\n${text}` });
+        }
+        await q(`DELETE FROM pending_feedback WHERE chat_id=$1`, [chatId]);
+        await tg("sendMessage", { chat_id: chatId, text: "Rahmat! Fikringiz qabul qilindi ✅" });
       }
     }
     res.json({ ok:true });
@@ -338,7 +444,10 @@ app.get("/order/:id", async (req, res, next) => { try {
   const sourceCode = getSourceCode(req) || String(req.cookies.source_code || "");
   const sourceTag = sourceBadge(sourceCode);
   const count = await cartCount(req);
-  res.send(page("Buyurtma", `<div class="panel" style="max-width:780px;margin:0 auto"><div class="actions" style="margin-bottom:10px"><a class="btn dark" href="/">← Ortga</a><a class="btn soft" href="/cart">Savatcha (${count})</a></div><div class="card" style="margin-bottom:12px"><div class="grid2"><div class="book-image" style="height:300px">${b.image ? `<img src="${esc(b.image)}" alt="${esc(b.title)}" />` : "📚"}</div><div><div class="title" style="margin-top:0">${esc(b.title)}</div><div class="muted">${esc(b.author || "")}</div><div class="price">${money(b.sale_price)}</div><div class="stock ok">Mavjud: ${b.stock_qty} dona</div><div class="tag" style="margin-top:14px">Dostavka: ${money(DELIVERY_FEE)}</div><div style="margin-top:10px">${sourceTag}</div></div></div></div><form class="form" method="post" action="/order/${b.id}"><input type="hidden" name="source_code" value="${esc(sourceCode)}" /><div class="grid2"><input name="customer_name" placeholder="Ismingiz" /><input name="phone" placeholder="Telefon raqam" required /></div><div class="grid2"><input type="number" name="qty" min="1" max="${b.stock_qty}" value="1" id="qtyInput" required /><button type="button" class="btn soft" id="locBtn" onclick="getLocation()">📍 Lokatsiyani yuborish</button></div><input type="hidden" name="latitude" id="latField" /><input type="hidden" name="longitude" id="lngField" /><input type="hidden" name="location_url" id="locationUrlField" /><textarea name="address_text" id="addressText" placeholder="Manzil yoki lokatsiya havolasi"></textarea><div class="small" id="locText">Lokatsiya hali tanlanmadi</div><div class="order-summary"><div>1 dona narx: <b>${money(b.sale_price)}</b></div><div>Dostavka: <b>${money(DELIVERY_FEE)}</b></div><div style="margin-top:8px">Jami: <b id="totalText">${money(Number(b.sale_price) + DELIVERY_FEE)}</b></div></div><div class="actions"><button type="submit" class="btn green">Zakaz yuborish</button><button type="submit" formmethod="post" formaction="/cart/add/${b.id}" class="btn soft">Savatchaga qo'shish</button></div></form></div><script>const unitPrice=${Number(b.sale_price)};const deliveryFee=${DELIVERY_FEE};const qtyInput=document.getElementById('qtyInput');const totalText=document.getElementById('totalText');const latField=document.getElementById('latField');const lngField=document.getElementById('lngField');const locationUrlField=document.getElementById('locationUrlField');const locText=document.getElementById('locText');const locBtn=document.getElementById('locBtn');function updateTotal(){const qty=Number(qtyInput.value||1);const total=(qty*unitPrice)+deliveryFee;totalText.textContent=new Intl.NumberFormat('ru-RU').format(total)+" so'm";}qtyInput.addEventListener('input',updateTotal);updateTotal();function applyLocation(lat,lng,label){latField.value=lat;lngField.value=lng;locationUrlField.value="https://maps.google.com/?q="+lat+","+lng;try{localStorage.setItem('last_location_lat',String(lat));localStorage.setItem('last_location_lng',String(lng));}catch(_e){}locText.textContent=label||"✅ Lokatsiya olindi: "+Number(lat).toFixed(5)+", "+Number(lng).toFixed(5);locBtn.textContent='✅ Tayyor';}function requestLocation(options,onError){navigator.geolocation.getCurrentPosition(function(pos){applyLocation(pos.coords.latitude,pos.coords.longitude);},onError,options);}function getLocation(){if(!navigator.geolocation){locText.textContent="Geolokatsiya yo'q. Telefon lokatsiya ruxsatini yoqing yoki manzilga aniq Google Maps link yozing";return;}locBtn.disabled=true;locBtn.textContent='⏳ Lokatsiya olinmoqda...';requestLocation({enableHighAccuracy:true,timeout:30000,maximumAge:0},function(err){locBtn.disabled=false;locBtn.textContent='📍 Lokatsiyani yuborish';const reason=err&&err.message?err.message:'Ruxsat berilmagan';locText.textContent='❌ Aniq lokatsiya olinmadi ('+reason+'). Iltimos telefon lokatsiyasiga ruxsat bering yoki manzilga aniq Google Maps link kiriting.';});}</script>`, { admin:isAdmin(req) }));
+  const bindToken = ensureBindToken(req, res);
+  const verifyUrl = TELEGRAM_BOT_USERNAME ? `https://t.me/${TELEGRAM_BOT_USERNAME}?start=verify_${bindToken}` : "";
+  const verifyBlock = TELEGRAM_BOT_USERNAME ? `<div class="actions"><a class="btn soft" target="_blank" href="${esc(verifyUrl)}">Shaxsingizni tasdiqlash</a></div><div class="small">Chekni Telegram'ga avtomatik yuborish uchun bir marta tasdiqlang.</div>` : `<div class="small">Telegram tasdiqlash uchun TELEGRAM_BOT_USERNAME ni sozlang.</div>`;
+  res.send(page("Buyurtma", `<div class="panel" style="max-width:780px;margin:0 auto"><div class="actions" style="margin-bottom:10px"><a class="btn dark" href="/">← Ortga</a><a class="btn soft" href="/cart">Savatcha (${count})</a></div><div class="card" style="margin-bottom:12px"><div class="grid2"><div class="book-image" style="height:300px">${b.image ? `<img src="${esc(b.image)}" alt="${esc(b.title)}" />` : "📚"}</div><div><div class="title" style="margin-top:0">${esc(b.title)}</div><div class="muted">${esc(b.author || "")}</div><div class="price">${money(b.sale_price)}</div><div class="stock ok">Mavjud: ${b.stock_qty} dona</div><div class="tag" style="margin-top:14px">Dostavka: ${money(DELIVERY_FEE)}</div><div style="margin-top:10px">${sourceTag}</div></div></div></div><form class="form" method="post" action="/order/${b.id}"><input type="hidden" name="source_code" value="${esc(sourceCode)}" /><input type="hidden" name="telegram_bind_token" value="${esc(bindToken)}" /><div class="grid2"><input name="customer_name" placeholder="Ismingiz" /><input name="phone" placeholder="Telefon raqam" required /></div>${verifyBlock}<div class="grid2"><input type="number" name="qty" min="1" max="${b.stock_qty}" value="1" id="qtyInput" required /><button type="button" class="btn soft" id="locBtn" onclick="getLocation()">📍 Lokatsiyani yuborish</button></div><input type="hidden" name="latitude" id="latField" /><input type="hidden" name="longitude" id="lngField" /><input type="hidden" name="location_url" id="locationUrlField" /><textarea name="address_text" id="addressText" placeholder="Manzil yoki lokatsiya havolasi"></textarea><div class="small" id="locText">Lokatsiya hali tanlanmadi</div><div class="order-summary"><div>1 dona narx: <b>${money(b.sale_price)}</b></div><div>Dostavka: <b>${money(DELIVERY_FEE)}</b></div><div style="margin-top:8px">Jami: <b id="totalText">${money(Number(b.sale_price) + DELIVERY_FEE)}</b></div></div><div class="actions"><button type="submit" class="btn green">Zakaz yuborish</button><button type="submit" formmethod="post" formaction="/cart/add/${b.id}" class="btn soft">Savatchaga qo'shish</button></div></form></div><script>const unitPrice=${Number(b.sale_price)};const deliveryFee=${DELIVERY_FEE};const qtyInput=document.getElementById('qtyInput');const totalText=document.getElementById('totalText');const latField=document.getElementById('latField');const lngField=document.getElementById('lngField');const locationUrlField=document.getElementById('locationUrlField');const locText=document.getElementById('locText');const locBtn=document.getElementById('locBtn');function updateTotal(){const qty=Number(qtyInput.value||1);const total=(qty*unitPrice)+deliveryFee;totalText.textContent=new Intl.NumberFormat('ru-RU').format(total)+" so'm";}qtyInput.addEventListener('input',updateTotal);updateTotal();function applyLocation(lat,lng,label){latField.value=lat;lngField.value=lng;locationUrlField.value="https://maps.google.com/?q="+lat+","+lng;try{localStorage.setItem('last_location_lat',String(lat));localStorage.setItem('last_location_lng',String(lng));}catch(_e){}locText.textContent=label||"✅ Lokatsiya olindi: "+Number(lat).toFixed(5)+", "+Number(lng).toFixed(5);locBtn.textContent='✅ Tayyor';}function requestLocation(options,onError){navigator.geolocation.getCurrentPosition(function(pos){applyLocation(pos.coords.latitude,pos.coords.longitude);},onError,options);}function getLocation(){if(!navigator.geolocation){locText.textContent="Geolokatsiya yo'q. Telefon lokatsiya ruxsatini yoqing yoki manzilga aniq Google Maps link yozing";return;}locBtn.disabled=true;locBtn.textContent='⏳ Lokatsiya olinmoqda...';requestLocation({enableHighAccuracy:true,timeout:30000,maximumAge:0},function(err){locBtn.disabled=false;locBtn.textContent='📍 Lokatsiyani yuborish';const reason=err&&err.message?err.message:'Ruxsat berilmagan';locText.textContent='❌ Aniq lokatsiya olinmadi ('+reason+'). Iltimos telefon lokatsiyasiga ruxsat bering yoki manzilga aniq Google Maps link kiriting.';});}</script>`, { admin:isAdmin(req) }));
 } catch (e) { next(e); } });
 
 app.post("/order/:id", async (req, res, next) => { const client = await pool.connect(); try {
@@ -349,7 +458,10 @@ app.post("/order/:id", async (req, res, next) => { const client = await pool.con
   const location = resolveLocation(req.body.latitude, req.body.longitude, req.body.location_url, req.body.address_text);
   const meta = sourceMeta(req.body.source_code || req.cookies.source_code || "");
   const batch = await nextOrderBatchId(client);
-  const inserted=await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`, [id, qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, DELIVERY_FEE, subtotal, total, batch, meta.code, meta.type, meta.name]);
+  const bindToken = String(req.body.telegram_bind_token || req.signedCookies.tg_bind_token || "");
+  const bind = bindToken ? await client.query(`SELECT chat_id FROM telegram_bindings WHERE token=$1`, [bindToken]) : { rows: [] };
+  const customerTelegram = String(bind.rows[0]?.chat_id || "");
+  const inserted=await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name, customer_telegram) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`, [id, qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, DELIVERY_FEE, subtotal, total, batch, meta.code, meta.type, meta.name, customerTelegram]);
   await client.query(`UPDATE books SET stock_qty = stock_qty - $1, updated_at=NOW() WHERE id=$2`, [qty, id]);
   await client.query("COMMIT");
   const summary = await getBatchSummary(batch);
@@ -380,7 +492,10 @@ app.get("/cart", async (req, res, next) => { try {
   const subtotal = items.reduce((a, x) => a + Number(x.sale_price || 0) * Number(x.qty || 0), 0);
   const total = subtotal + (items.length ? DELIVERY_FEE : 0);
   const body = items.length ? items.map(cartItemHtml).join("") : `<div class="panel">Savatcha bo'sh</div>`;
-  res.send(page("Savatcha", `<div class="panel" style="max-width:900px;margin:0 auto"><div class="actions" style="margin-bottom:12px"><a class="btn dark" href="/">← Davom etish</a></div><h2>Savatcha</h2>${sourceBadge(sourceCode)}${body}${items.length ? `<form class="form" method="post" action="/checkout" style="margin-top:16px"><input type="hidden" name="source_code" value="${esc(sourceCode)}" /><div class="grid2"><input name="customer_name" placeholder="Ismingiz" /><input name="phone" placeholder="Telefon raqam" required /></div><div class="grid2"><button type="button" class="btn soft" id="cartLocBtn" onclick="getCartLocation()">📍 Lokatsiyani yuborish</button><div class="small" id="cartLocText">Lokatsiya hali tanlanmadi</div></div><input type="hidden" name="latitude" id="cartLatField" /><input type="hidden" name="longitude" id="cartLngField" /><input type="hidden" name="location_url" id="cartLocationUrlField" /><textarea name="address_text" placeholder="Manzil yoki lokatsiya havolasi"></textarea><div class="order-summary"><div>Mahsulotlar: <b>${money(subtotal)}</b></div><div>Dostavka: <b>${money(items.length ? DELIVERY_FEE : 0)}</b></div><div style="margin-top:8px">Jami: <b>${money(total)}</b></div></div><button class="btn green" type="submit">Bitta zakaz qilish</button></form><script>function setCartLocation(lat,lng,label){document.getElementById('cartLatField').value=lat;document.getElementById('cartLngField').value=lng;document.getElementById('cartLocationUrlField').value='https://maps.google.com/?q='+lat+','+lng;try{localStorage.setItem('last_location_lat',String(lat));localStorage.setItem('last_location_lng',String(lng));}catch(_e){}document.getElementById('cartLocText').textContent=label||'✅ Lokatsiya olindi';document.getElementById('cartLocBtn').textContent='✅ Tayyor';}function getCartLocation(){const btn=document.getElementById('cartLocBtn');const text=document.getElementById('cartLocText');if(!navigator.geolocation){text.textContent="Geolokatsiya yo'q. Telefon lokatsiya ruxsatini yoqing yoki manzilga aniq Google Maps link yozing";return;}btn.disabled=true;btn.textContent='⏳ Lokatsiya olinmoqda...';navigator.geolocation.getCurrentPosition(function(pos){setCartLocation(pos.coords.latitude,pos.coords.longitude);},function(err){btn.disabled=false;btn.textContent='📍 Lokatsiyani yuborish';const reason=err&&err.message?err.message:'Ruxsat berilmagan';text.textContent='❌ Aniq lokatsiya olinmadi ('+reason+'). Iltimos lokatsiyaga ruxsat bering yoki manzilga aniq Google Maps link kiriting.';},{enableHighAccuracy:true,timeout:30000,maximumAge:0});}</script>` : ""}</div>`, { admin:isAdmin(req) }));
+  const bindToken = ensureBindToken(req, res);
+  const verifyUrl = TELEGRAM_BOT_USERNAME ? `https://t.me/${TELEGRAM_BOT_USERNAME}?start=verify_${bindToken}` : "";
+  const verifyBlock = TELEGRAM_BOT_USERNAME ? `<div class="actions"><a class="btn soft" target="_blank" href="${esc(verifyUrl)}">Shaxsingizni tasdiqlash</a></div>` : `<div class="small">Telegram tasdiqlash uchun TELEGRAM_BOT_USERNAME ni sozlang.</div>`;
+  res.send(page("Savatcha", `<div class="panel" style="max-width:900px;margin:0 auto"><div class="actions" style="margin-bottom:12px"><a class="btn dark" href="/">← Davom etish</a></div><h2>Savatcha</h2>${sourceBadge(sourceCode)}${body}${items.length ? `<form class="form" method="post" action="/checkout" style="margin-top:16px"><input type="hidden" name="source_code" value="${esc(sourceCode)}" /><input type="hidden" name="telegram_bind_token" value="${esc(bindToken)}" /><div class="grid2"><input name="customer_name" placeholder="Ismingiz" /><input name="phone" placeholder="Telefon raqam" required /></div>${verifyBlock}<div class="grid2"><button type="button" class="btn soft" id="cartLocBtn" onclick="getCartLocation()">📍 Lokatsiyani yuborish</button><div class="small" id="cartLocText">Lokatsiya hali tanlanmadi</div></div><input type="hidden" name="latitude" id="cartLatField" /><input type="hidden" name="longitude" id="cartLngField" /><input type="hidden" name="location_url" id="cartLocationUrlField" /><textarea name="address_text" placeholder="Manzil yoki lokatsiya havolasi"></textarea><div class="order-summary"><div>Mahsulotlar: <b>${money(subtotal)}</b></div><div>Dostavka: <b>${money(items.length ? DELIVERY_FEE : 0)}</b></div><div style="margin-top:8px">Jami: <b>${money(total)}</b></div></div><button class="btn green" type="submit">Bitta zakaz qilish</button></form><script>function setCartLocation(lat,lng,label){document.getElementById('cartLatField').value=lat;document.getElementById('cartLngField').value=lng;document.getElementById('cartLocationUrlField').value='https://maps.google.com/?q='+lat+','+lng;try{localStorage.setItem('last_location_lat',String(lat));localStorage.setItem('last_location_lng',String(lng));}catch(_e){}document.getElementById('cartLocText').textContent=label||'✅ Lokatsiya olindi';document.getElementById('cartLocBtn').textContent='✅ Tayyor';}function getCartLocation(){const btn=document.getElementById('cartLocBtn');const text=document.getElementById('cartLocText');if(!navigator.geolocation){text.textContent="Geolokatsiya yo'q. Telefon lokatsiya ruxsatini yoqing yoki manzilga aniq Google Maps link yozing";return;}btn.disabled=true;btn.textContent='⏳ Lokatsiya olinmoqda...';navigator.geolocation.getCurrentPosition(function(pos){setCartLocation(pos.coords.latitude,pos.coords.longitude);},function(err){btn.disabled=false;btn.textContent='📍 Lokatsiyani yuborish';const reason=err&&err.message?err.message:'Ruxsat berilmagan';text.textContent='❌ Aniq lokatsiya olinmadi ('+reason+'). Iltimos lokatsiyaga ruxsat bering yoki manzilga aniq Google Maps link kiriting.';},{enableHighAccuracy:true,timeout:30000,maximumAge:0});}</script>` : ""}</div>`, { admin:isAdmin(req) }));
 } catch (e) { next(e); } });
 
 app.post("/cart/update/:id", async (req, res, next) => { try {
@@ -410,6 +525,9 @@ app.post("/checkout", async (req, res, next) => { const client = await pool.conn
   await client.query("BEGIN");
   const batch = await nextOrderBatchId(client);
   const meta = sourceMeta(req.body.source_code || req.cookies.source_code || "");
+  const bindToken = String(req.body.telegram_bind_token || req.signedCookies.tg_bind_token || "");
+  const bind = bindToken ? await client.query(`SELECT chat_id FROM telegram_bindings WHERE token=$1`, [bindToken]) : { rows: [] };
+  const customerTelegram = String(bind.rows[0]?.chat_id || "");
   let total = 0;
   for (let i=0;i<items.rows.length;i++) {
     const item = items.rows[i];
@@ -420,8 +538,8 @@ app.post("/checkout", async (req, res, next) => { const client = await pool.conn
     const lineTotal = subtotal + delivery;
     total += lineTotal;
     const location = resolveLocation(req.body.latitude, req.body.longitude, req.body.location_url, req.body.address_text);
-    await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, [item.book_id, item.qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, delivery, subtotal, lineTotal, batch, meta.code, meta.type, meta.name]);
+    await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name, customer_telegram)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, [item.book_id, item.qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, delivery, subtotal, lineTotal, batch, meta.code, meta.type, meta.name, customerTelegram]);
     await client.query(`UPDATE books SET stock_qty = stock_qty - $1, updated_at=NOW() WHERE id=$2`, [item.qty, item.book_id]);
   }
   await client.query(`DELETE FROM cart_items WHERE session_id=$1`, [sid]);
@@ -445,8 +563,150 @@ app.get("/admin/purchases/new", requireAdmin, async (_req,res,next)=>{ try { con
 app.post("/admin/purchases/new", requireAdmin, upload.single("image"), async (req,res,next)=>{ const client=await pool.connect(); try { const qty=Number(req.body.qty||0); const purchasePrice=Number(req.body.purchase_price||0); const markupPercent=Number(req.body.markup_percent||0); if(!Number.isFinite(qty)||qty<=0) throw new Error("Soni noto'g'ri"); if(!Number.isFinite(purchasePrice)||purchasePrice<0) throw new Error("Olingan narx noto'g'ri"); if(!Number.isFinite(markupPercent)||markupPercent<0) throw new Error("Pereocenka foizi noto'g'ri"); await client.query("BEGIN"); let bookId=Number(req.body.existing_book_id||0); const imagePath=await saveImage(req.file); const salePrice=Math.round(purchasePrice*(1+markupPercent/100)); const lineSum=qty*purchasePrice; if(!bookId){ const title=String(req.body.title||"").trim(); if(!title) throw new Error("Yangi kitob nomini kiriting yoki mavjud kitobni tanlang"); const inserted=await client.query(`INSERT INTO books(title, author, image, purchase_price, markup_percent, sale_price, stock_qty, active, category_id) VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE,$8) RETURNING id`, [title, String(req.body.author||""), imagePath, purchasePrice, markupPercent, salePrice, qty, Number(req.body.category_id||0) || null]); bookId=inserted.rows[0].id; } else { const current=await client.query(`SELECT * FROM books WHERE id=$1 FOR UPDATE`, [bookId]); if(!current.rows.length) throw new Error("Kitob topilmadi"); await client.query(`UPDATE books SET author = CASE WHEN $1 <> '' THEN $1 ELSE author END, image = CASE WHEN $2 <> '' THEN $2 ELSE image END, purchase_price = $3, markup_percent = $4, sale_price = $5, stock_qty = stock_qty + $6, category_id = COALESCE($8, category_id), updated_at = NOW() WHERE id = $7`, [String(req.body.author||""), imagePath, purchasePrice, markupPercent, salePrice, qty, bookId, Number(req.body.category_id||0) || null]); } const docNo=await nextPurchaseNo(client); const purchase=await client.query(`INSERT INTO purchases(doc_no, doc_date, counterparty_id, note, total_sum) VALUES ($1,$2,$3,$4,$5) RETURNING id`, [docNo, req.body.doc_date, req.body.counterparty_id, String(req.body.note||""), lineSum]); await client.query(`INSERT INTO purchase_lines(purchase_id, book_id, qty, purchase_price, markup_percent, sale_price, line_sum) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [purchase.rows[0].id, bookId, qty, purchasePrice, markupPercent, salePrice, lineSum]); await client.query("COMMIT"); res.redirect(`/admin/purchases/${purchase.rows[0].id}`); } catch(e){ await client.query("ROLLBACK"); next(e);} finally { client.release(); } });
 app.get("/admin/purchases", requireAdmin, async (_req,res,next)=>{ try { const r=await q(`SELECT p.*, COALESCE(c.name,'-') AS counterparty_name FROM purchases p LEFT JOIN counterparties c ON c.id=p.counterparty_id ORDER BY p.id DESC`); const rows=r.rows.map((p)=>`<tr><td>${esc(p.doc_no)}</td><td>${esc(String(p.doc_date))}</td><td>${esc(p.counterparty_name)}</td><td>${money(p.total_sum)}</td><td><a class="btn soft" href="/admin/purchases/${p.id}">Ko'rish</a></td></tr>`).join(""); res.send(page("Prihodlar", `<div class="panel"><div class="nav"><a class="btn" href="/admin/purchases/new">+ Prihod qilish</a><a class="btn dark" href="/admin">← Admin</a></div><h2>Prihodlar</h2><table><tr><th>№</th><th>Sana</th><th>Kontragent</th><th>Jami</th><th></th></tr>${rows || `<tr><td colspan="5">Prihod yo'q</td></tr>`}</table></div>`, { admin:true })); } catch(e){ next(e);} });
 app.get("/admin/purchases/:id", requireAdmin, async (req,res,next)=>{ try { const id=Number(req.params.id); const h=await q(`SELECT p.*, COALESCE(c.name,'-') AS counterparty_name FROM purchases p LEFT JOIN counterparties c ON c.id=p.counterparty_id WHERE p.id=$1`, [id]); if(!h.rows.length) return res.status(404).send("Topilmadi"); const p=h.rows[0]; const lines=await q(`SELECT pl.*, b.title FROM purchase_lines pl JOIN books b ON b.id=pl.book_id WHERE pl.purchase_id=$1`, [id]); const rows=lines.rows.map((l)=>`<tr><td>${esc(l.title)}</td><td>${l.qty}</td><td>${money(l.purchase_price)}</td><td>${l.markup_percent}%</td><td>${money(l.sale_price)}</td><td>${money(l.line_sum)}</td></tr>`).join(""); res.send(page("Prihod", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin/purchases">← Prihodlar</a><a class="btn" href="/admin/purchases/${id}/pdf">PDF</a></div><h2>Prihod ${esc(p.doc_no)}</h2><div class="grid2"><div class="card"><b>Sana</b><br>${esc(String(p.doc_date))}</div><div class="card"><b>Kontragent</b><br>${esc(p.counterparty_name)}</div></div><table style="margin-top:12px"><tr><th>Kitob</th><th>Soni</th><th>Olingan narx</th><th>Pereocenka</th><th>Sotuv narxi</th><th>Summa</th></tr>${rows}</table><div class="right" style="margin-top:12px;font-size:20px;font-weight:900">Jami: ${money(p.total_sum)}</div></div>`, { admin:true })); } catch(e){ next(e);} });
-app.get("/admin/purchases/:id/pdf", requireAdmin, async (req,res,next)=>{ try { const id=Number(req.params.id); const h=await q(`SELECT p.*, COALESCE(c.name,'-') AS counterparty_name FROM purchases p LEFT JOIN counterparties c ON c.id=p.counterparty_id WHERE p.id=$1`, [id]); if(!h.rows.length) return res.status(404).send("Topilmadi"); const p=h.rows[0]; const lines=await q(`SELECT pl.*, b.title FROM purchase_lines pl JOIN books b ON b.id=pl.book_id WHERE pl.purchase_id=$1`, [id]); res.setHeader("Content-Type", "application/pdf"); res.setHeader("Content-Disposition", `attachment; filename="${p.doc_no}.pdf"`); const doc=new PDFDocument({ margin:40 }); doc.pipe(res); doc.fontSize(18).text("PRIHOD NAKLADNOY", { align:"center" }); doc.moveDown(); doc.text(`Hujjat: ${p.doc_no}`); doc.text(`Sana: ${p.doc_date}`); doc.text(`Kontragent: ${p.counterparty_name}`); doc.moveDown(); lines.rows.forEach((l,i)=>doc.text(`${i+1}. ${l.title} | ${l.qty} dona | ${money(l.purchase_price)} | ${money(l.line_sum)}`)); doc.moveDown(); doc.text(`Jami: ${money(p.total_sum)}`, { align:"right" }); doc.end(); } catch(e){ next(e);} });
-app.get("/admin/orders", requireAdmin, async (_req,res,next)=>{ try { const r=await q(`SELECT o.*, b.title FROM customer_orders o JOIN books b ON b.id=o.book_id ORDER BY o.id DESC`); const rows=r.rows.map((o)=>`<tr><td>#${o.id}</td><td>${esc(o.batch_id || '-')}</td><td>${esc(o.title)}</td><td>${o.qty}</td><td>${esc(o.customer_name || "-")}</td><td>${esc(o.phone)}</td><td>${esc(o.source_name || '-')}</td><td>${money(o.total_sum)}</td><td>${esc(statusLabel(o.status))}</td></tr>`).join(""); res.send(page("Zakazlar", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin">← Admin</a></div><h2>Zakazlar</h2><table><tr><th>ID</th><th>Batch</th><th>Kitob</th><th>Soni</th><th>Mijoz</th><th>Telefon</th><th>Manba</th><th>Jami</th><th>Status</th></tr>${rows || `<tr><td colspan="9">Zakaz yo'q</td></tr>`}</table></div>`, { admin:true })); } catch(e){ next(e);} });
+app.get("/admin/purchases/:id/pdf", requireAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const h = await q(`SELECT p.*, COALESCE(c.name,'-') AS counterparty_name FROM purchases p LEFT JOIN counterparties c ON c.id=p.counterparty_id WHERE p.id=$1`, [id]);
+    if (!h.rows.length) return res.status(404).send("Topilmadi");
+    const p = h.rows[0];
+    const lines = await q(`SELECT pl.*, b.title FROM purchase_lines pl JOIN books b ON b.id=pl.book_id WHERE pl.purchase_id=$1`, [id]);
+
+    const orgName = process.env.ORG_NAME || "Kitob Market";
+    const warehouseName = process.env.WAREHOUSE_NAME || "Asosiy ombor";
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${p.doc_no}.pdf"`);
+
+    const doc = new PDFDocument({ margin:36, size: "A4" });
+    doc.pipe(res);
+    const regularFont = pickPdfFontPath("DejaVuSans.ttf");
+    const boldFont = pickPdfFontPath("DejaVuSans-Bold.ttf");
+    if (regularFont) doc.registerFont("ui", regularFont);
+    if (boldFont) doc.registerFont("ui-bold", boldFont);
+    const fontRegular = regularFont ? "ui" : "Helvetica";
+    const fontBold = boldFont ? "ui-bold" : "Helvetica-Bold";
+
+    const pageWidth = doc.page.width;
+    const left = 36;
+    const right = pageWidth - 36;
+
+    doc.font(fontBold).fontSize(20).fillColor("#0f1e38").text(`Prihod nakladnoy No ${p.doc_no}`, left, 34, { align: "left" });
+    doc.font(fontRegular).fontSize(12).fillColor("#334155");
+    doc.text(`Sana: ${dateUz(p.doc_date)}`, left, 62);
+    doc.text(`Tashkilot: ${orgName}`, left, 80);
+    doc.text(`Ombor: ${warehouseName}`, left, 98);
+    doc.text(`Kontragent: ${p.counterparty_name}`, left, 116);
+    doc.moveTo(left, 138).lineTo(right, 138).strokeColor("#cbd5e1").lineWidth(1).stroke();
+
+    const tableTop = 150;
+    const rowH = 26;
+    const cols = [
+      { key: "idx", title: "No", width: 32, align: "center" },
+      { key: "title", title: "Nomi", width: 300, align: "left" },
+      { key: "qty", title: "Soni", width: 80, align: "right" },
+      { key: "price", title: "Narxi", width: 111, align: "right" },
+    ];
+
+    const fmt = (n) => Number(n || 0).toLocaleString("ru-RU");
+    const xBy = [];
+    let currentX = left;
+    cols.forEach((c) => {
+      xBy.push(currentX);
+      currentX += c.width;
+    });
+
+    const drawRow = (y, row, isHeader = false) => {
+      doc.rect(left, y, right - left, rowH).fillAndStroke(isHeader ? "#e8eefc" : "#ffffff", "#cbd5e1");
+      cols.forEach((c, i) => {
+        const x = xBy[i];
+        if (i > 0) doc.moveTo(x, y).lineTo(x, y + rowH).strokeColor("#cbd5e1").lineWidth(1).stroke();
+        const text = row[c.key];
+        doc.font(isHeader ? fontBold : fontRegular).fontSize(10).fillColor("#0f172a").text(
+          String(text),
+          x + 5,
+          y + 8,
+          { width: c.width - 10, align: c.align || "left", lineBreak: false, ellipsis: true }
+        );
+      });
+    };
+
+    drawRow(tableTop, Object.fromEntries(cols.map((c) => [c.key, c.title])), true);
+
+    let y = tableTop + rowH;
+    lines.rows.forEach((l, i) => {
+      const row = {
+        idx: i + 1,
+        title: l.title,
+        qty: fmt(l.qty),
+        price: fmt(l.purchase_price),
+      };
+      drawRow(y, row, false);
+      y += rowH;
+    });
+
+    const totalsY = y + 14;
+    doc.font(fontRegular).fontSize(11).fillColor("#0f172a");
+    doc.text(`Pozitsiyalar soni: ${lines.rows.length}`, left, totalsY);
+    doc.font(fontBold).fontSize(13).fillColor("#0f1e38").text(`Jami: ${fmt(p.total_sum)} so'm`, left, totalsY, { align: "right" });
+
+    const signY = totalsY + 46;
+    doc.font(fontRegular).fontSize(11).fillColor("#334155");
+    doc.text("Topshirdi: ____________________", left, signY);
+    doc.text("Qabul qildi: ____________________", left + 290, signY);
+
+    doc.end();
+  } catch (e) {
+    next(e);
+  }
+});
+app.get("/admin/orders", requireAdmin, async (_req,res,next)=>{ try { const r=await q(`SELECT o.*, b.title FROM customer_orders o JOIN books b ON b.id=o.book_id ORDER BY o.id DESC`); const rows=r.rows.map((o)=>`<tr><td>#${o.id}</td><td>${esc(o.batch_id || '-')}</td><td>${esc(o.title)}</td><td>${o.qty}</td><td>${esc(o.customer_name || "-")}</td><td>${esc(o.phone)}</td><td>${esc(o.source_name || '-')}</td><td>${money(o.total_sum)}</td><td>${esc(statusLabel(o.status))}</td><td><a class="btn soft" href="/admin/orders/${o.id}/receipt">Chek</a></td></tr>`).join(""); res.send(page("Zakazlar", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin">← Admin</a></div><h2>Zakazlar</h2><table><tr><th>ID</th><th>Batch</th><th>Kitob</th><th>Soni</th><th>Mijoz</th><th>Telefon</th><th>Manba</th><th>Jami</th><th>Status</th><th></th></tr>${rows || `<tr><td colspan="10">Zakaz yo'q</td></tr>`}</table></div>`, { admin:true })); } catch(e){ next(e);} });
+app.get("/admin/orders/:id/receipt", requireAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await q(`SELECT o.*, b.title, b.author, b.sale_price FROM customer_orders o JOIN books b ON b.id=o.book_id WHERE o.id=$1`, [id]);
+    if (!r.rows.length) return res.status(404).send("Topilmadi");
+    const o = r.rows[0];
+    const regularFont = pickPdfFontPath("DejaVuSans.ttf");
+    const boldFont = pickPdfFontPath("DejaVuSans-Bold.ttf");
+    const doc = new PDFDocument({ margin: 36, size: "A5" });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="CHECK-${o.id}.pdf"`);
+    doc.pipe(res);
+    if (regularFont) doc.registerFont("ui", regularFont);
+    if (boldFont) doc.registerFont("ui-bold", boldFont);
+    const fontRegular = regularFont ? "ui" : "Helvetica";
+    const fontBold = boldFont ? "ui-bold" : "Helvetica-Bold";
+    const fmt = (n) => Number(n || 0).toLocaleString("ru-RU");
+    const subtotal = Number(o.subtotal || (Number(o.qty || 0) * Number(o.sale_price || 0)));
+    const left = 36;
+    const right = doc.page.width - 36;
+    doc.font(fontBold).fontSize(20).fillColor("#0f1e38").text("Xarid cheki", left, 28, { align: "center", width: right - left });
+    doc.font(fontRegular).fontSize(11).fillColor("#0f172a");
+    doc.text(`Sana: ${dateUz(o.created_at || new Date())}`, left, 72);
+    doc.text(`Chek No: ${o.id}`, left, 90);
+    doc.text(`Mijoz: ${o.customer_name || "-"}`, left, 108);
+    const top = 136;
+    const cols = [
+      { key: "title", title: "Nomi", x: left, w: 190, align: "left" },
+      { key: "qty", title: "Soni", x: left + 190, w: 60, align: "right" },
+      { key: "price", title: "Narxi", x: left + 250, w: right - (left + 250), align: "right" }
+    ];
+    doc.rect(left, top, right - left, 26).fillAndStroke("#edf2ff", "#cbd5e1");
+    cols.forEach((c) => doc.font(fontBold).fontSize(11).fillColor("#0f172a").text(c.title, c.x + 6, top + 8, { width: c.w - 12, align: c.align }));
+    doc.rect(left, top + 26, right - left, 34).fillAndStroke("#ffffff", "#cbd5e1");
+    doc.font(fontRegular).fontSize(11).fillColor("#0f172a");
+    doc.text(String(o.title || "-"), cols[0].x + 6, top + 38, { width: cols[0].w - 12, align: "left", ellipsis: true });
+    doc.text(fmt(o.qty), cols[1].x + 6, top + 38, { width: cols[1].w - 12, align: "right" });
+    doc.text(`${fmt(o.sale_price)} so'm`, cols[2].x + 6, top + 38, { width: cols[2].w - 12, align: "right" });
+    const totalY = top + 84;
+    doc.moveTo(left, totalY).lineTo(right, totalY).strokeColor("#cbd5e1").stroke();
+    doc.font(fontBold).fontSize(16).fillColor("#0f1e38").text(`Jami to'lov: ${fmt(subtotal)} so'm`, left, totalY + 10, { width: right - left, align: "right" });
+    doc.font(fontRegular).fontSize(9).fillColor("#64748b").text("Eslatma: ushbu chekda доставка puli ko'rsatilmaydi.", left, totalY + 34, { width: right - left, align: "right" });
+    doc.end();
+  } catch (e) {
+    next(e);
+  }
+});
 app.get("/admin/reports", requireAdmin, async (_req,res,next)=>{ try {
   const stock=await q(`SELECT title, stock_qty, sale_price, purchase_price FROM books ORDER BY title`);
   const rows=stock.rows.map((b)=>`<tr><td>${esc(b.title)}</td><td>${b.stock_qty}</td><td>${money(b.purchase_price)}</td><td>${money(b.sale_price)}</td><td>${money(Number(b.stock_qty) * Number(b.sale_price || 0))}</td></tr>`).join("");
