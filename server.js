@@ -50,6 +50,14 @@ app.use("/uploads", express.static(UPLOAD_DIR));
 function q(text, params = []) { return pool.query(text, params); }
 function esc(value = "") { return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;"); }
 function money(v) { return Number(v || 0).toLocaleString("ru-RU") + " so'm"; }
+function dateUz(v) {
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v || "");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yy = d.getFullYear();
+  return `${dd}.${mm}.${yy}`;
+}
 function signedAdminValue() { return crypto.createHash("sha256").update(`${ADMIN_PIN}|${SESSION_SECRET}`).digest("hex"); }
 function isAdmin(req) { return req.signedCookies.admin === signedAdminValue(); }
 function requireAdmin(req, res, next) { if (!isAdmin(req)) return res.redirect("/admin/login"); next(); }
@@ -464,7 +472,102 @@ app.get("/admin/purchases/new", requireAdmin, async (_req,res,next)=>{ try { con
 app.post("/admin/purchases/new", requireAdmin, upload.single("image"), async (req,res,next)=>{ const client=await pool.connect(); try { const qty=Number(req.body.qty||0); const purchasePrice=Number(req.body.purchase_price||0); const markupPercent=Number(req.body.markup_percent||0); if(!Number.isFinite(qty)||qty<=0) throw new Error("Soni noto'g'ri"); if(!Number.isFinite(purchasePrice)||purchasePrice<0) throw new Error("Olingan narx noto'g'ri"); if(!Number.isFinite(markupPercent)||markupPercent<0) throw new Error("Pereocenka foizi noto'g'ri"); await client.query("BEGIN"); let bookId=Number(req.body.existing_book_id||0); const imagePath=await saveImage(req.file); const salePrice=Math.round(purchasePrice*(1+markupPercent/100)); const lineSum=qty*purchasePrice; if(!bookId){ const title=String(req.body.title||"").trim(); if(!title) throw new Error("Yangi kitob nomini kiriting yoki mavjud kitobni tanlang"); const inserted=await client.query(`INSERT INTO books(title, author, image, purchase_price, markup_percent, sale_price, stock_qty, active, category_id) VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE,$8) RETURNING id`, [title, String(req.body.author||""), imagePath, purchasePrice, markupPercent, salePrice, qty, Number(req.body.category_id||0) || null]); bookId=inserted.rows[0].id; } else { const current=await client.query(`SELECT * FROM books WHERE id=$1 FOR UPDATE`, [bookId]); if(!current.rows.length) throw new Error("Kitob topilmadi"); await client.query(`UPDATE books SET author = CASE WHEN $1 <> '' THEN $1 ELSE author END, image = CASE WHEN $2 <> '' THEN $2 ELSE image END, purchase_price = $3, markup_percent = $4, sale_price = $5, stock_qty = stock_qty + $6, category_id = COALESCE($8, category_id), updated_at = NOW() WHERE id = $7`, [String(req.body.author||""), imagePath, purchasePrice, markupPercent, salePrice, qty, bookId, Number(req.body.category_id||0) || null]); } const docNo=await nextPurchaseNo(client); const purchase=await client.query(`INSERT INTO purchases(doc_no, doc_date, counterparty_id, note, total_sum) VALUES ($1,$2,$3,$4,$5) RETURNING id`, [docNo, req.body.doc_date, req.body.counterparty_id, String(req.body.note||""), lineSum]); await client.query(`INSERT INTO purchase_lines(purchase_id, book_id, qty, purchase_price, markup_percent, sale_price, line_sum) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [purchase.rows[0].id, bookId, qty, purchasePrice, markupPercent, salePrice, lineSum]); await client.query("COMMIT"); res.redirect(`/admin/purchases/${purchase.rows[0].id}`); } catch(e){ await client.query("ROLLBACK"); next(e);} finally { client.release(); } });
 app.get("/admin/purchases", requireAdmin, async (_req,res,next)=>{ try { const r=await q(`SELECT p.*, COALESCE(c.name,'-') AS counterparty_name FROM purchases p LEFT JOIN counterparties c ON c.id=p.counterparty_id ORDER BY p.id DESC`); const rows=r.rows.map((p)=>`<tr><td>${esc(p.doc_no)}</td><td>${esc(String(p.doc_date))}</td><td>${esc(p.counterparty_name)}</td><td>${money(p.total_sum)}</td><td><a class="btn soft" href="/admin/purchases/${p.id}">Ko'rish</a></td></tr>`).join(""); res.send(page("Prihodlar", `<div class="panel"><div class="nav"><a class="btn" href="/admin/purchases/new">+ Prihod qilish</a><a class="btn dark" href="/admin">← Admin</a></div><h2>Prihodlar</h2><table><tr><th>№</th><th>Sana</th><th>Kontragent</th><th>Jami</th><th></th></tr>${rows || `<tr><td colspan="5">Prihod yo'q</td></tr>`}</table></div>`, { admin:true })); } catch(e){ next(e);} });
 app.get("/admin/purchases/:id", requireAdmin, async (req,res,next)=>{ try { const id=Number(req.params.id); const h=await q(`SELECT p.*, COALESCE(c.name,'-') AS counterparty_name FROM purchases p LEFT JOIN counterparties c ON c.id=p.counterparty_id WHERE p.id=$1`, [id]); if(!h.rows.length) return res.status(404).send("Topilmadi"); const p=h.rows[0]; const lines=await q(`SELECT pl.*, b.title FROM purchase_lines pl JOIN books b ON b.id=pl.book_id WHERE pl.purchase_id=$1`, [id]); const rows=lines.rows.map((l)=>`<tr><td>${esc(l.title)}</td><td>${l.qty}</td><td>${money(l.purchase_price)}</td><td>${l.markup_percent}%</td><td>${money(l.sale_price)}</td><td>${money(l.line_sum)}</td></tr>`).join(""); res.send(page("Prihod", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin/purchases">← Prihodlar</a><a class="btn" href="/admin/purchases/${id}/pdf">PDF</a></div><h2>Prihod ${esc(p.doc_no)}</h2><div class="grid2"><div class="card"><b>Sana</b><br>${esc(String(p.doc_date))}</div><div class="card"><b>Kontragent</b><br>${esc(p.counterparty_name)}</div></div><table style="margin-top:12px"><tr><th>Kitob</th><th>Soni</th><th>Olingan narx</th><th>Pereocenka</th><th>Sotuv narxi</th><th>Summa</th></tr>${rows}</table><div class="right" style="margin-top:12px;font-size:20px;font-weight:900">Jami: ${money(p.total_sum)}</div></div>`, { admin:true })); } catch(e){ next(e);} });
-app.get("/admin/purchases/:id/pdf", requireAdmin, async (req,res,next)=>{ try { const id=Number(req.params.id); const h=await q(`SELECT p.*, COALESCE(c.name,'-') AS counterparty_name FROM purchases p LEFT JOIN counterparties c ON c.id=p.counterparty_id WHERE p.id=$1`, [id]); if(!h.rows.length) return res.status(404).send("Topilmadi"); const p=h.rows[0]; const lines=await q(`SELECT pl.*, b.title FROM purchase_lines pl JOIN books b ON b.id=pl.book_id WHERE pl.purchase_id=$1`, [id]); res.setHeader("Content-Type", "application/pdf"); res.setHeader("Content-Disposition", `attachment; filename="${p.doc_no}.pdf"`); const doc=new PDFDocument({ margin:40 }); doc.pipe(res); doc.fontSize(18).text("PRIHOD NAKLADNOY", { align:"center" }); doc.moveDown(); doc.text(`Hujjat: ${p.doc_no}`); doc.text(`Sana: ${p.doc_date}`); doc.text(`Kontragent: ${p.counterparty_name}`); doc.moveDown(); lines.rows.forEach((l,i)=>doc.text(`${i+1}. ${l.title} | ${l.qty} dona | ${money(l.purchase_price)} | ${money(l.line_sum)}`)); doc.moveDown(); doc.text(`Jami: ${money(p.total_sum)}`, { align:"right" }); doc.end(); } catch(e){ next(e);} });
+app.get("/admin/purchases/:id/pdf", requireAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const h = await q(`SELECT p.*, COALESCE(c.name,'-') AS counterparty_name FROM purchases p LEFT JOIN counterparties c ON c.id=p.counterparty_id WHERE p.id=$1`, [id]);
+    if (!h.rows.length) return res.status(404).send("Topilmadi");
+    const p = h.rows[0];
+    const lines = await q(`SELECT pl.*, b.title FROM purchase_lines pl JOIN books b ON b.id=pl.book_id WHERE pl.purchase_id=$1`, [id]);
+
+    const orgName = process.env.ORG_NAME || "Kitob Market";
+    const warehouseName = process.env.WAREHOUSE_NAME || "Asosiy ombor";
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${p.doc_no}.pdf"`);
+
+    const doc = new PDFDocument({ margin:36, size: "A4" });
+    doc.pipe(res);
+
+    const pageWidth = doc.page.width;
+    const left = 36;
+    const right = pageWidth - 36;
+
+    doc.font("Helvetica-Bold").fontSize(20).fillColor("#0f1e38").text(`Prihod nakladnoy № ${p.doc_no}`, left, 34, { align: "left" });
+    doc.font("Helvetica").fontSize(12).fillColor("#334155");
+    doc.text(`Sana: ${dateUz(p.doc_date)}`, left, 62);
+    doc.text(`Tashkilot: ${orgName}`, left, 80);
+    doc.text(`Ombor: ${warehouseName}`, left, 98);
+    doc.text(`Kontragent: ${p.counterparty_name}`, left, 116);
+    doc.moveTo(left, 138).lineTo(right, 138).strokeColor("#cbd5e1").lineWidth(1).stroke();
+
+    const tableTop = 150;
+    const rowH = 26;
+    const cols = [
+      { key: "idx", title: "№", width: 32, align: "center" },
+      { key: "title", title: "Nomi", width: 224, align: "left" },
+      { key: "qty", title: "Soni", width: 52, align: "right" },
+      { key: "price", title: "Narxi", width: 86, align: "right" },
+      { key: "markup", title: "%", width: 45, align: "right" },
+      { key: "sale", title: "Sotuv", width: 86, align: "right" },
+      { key: "sum", title: "Jami", width: 86, align: "right" },
+    ];
+
+    const fmt = (n) => Number(n || 0).toLocaleString("ru-RU");
+    const xBy = [];
+    let currentX = left;
+    cols.forEach((c) => {
+      xBy.push(currentX);
+      currentX += c.width;
+    });
+
+    const drawRow = (y, row, isHeader = false) => {
+      doc.rect(left, y, right - left, rowH).fillAndStroke(isHeader ? "#e8eefc" : "#ffffff", "#cbd5e1");
+      cols.forEach((c, i) => {
+        const x = xBy[i];
+        if (i > 0) doc.moveTo(x, y).lineTo(x, y + rowH).strokeColor("#cbd5e1").lineWidth(1).stroke();
+        const text = row[c.key];
+        doc.font(isHeader ? "Helvetica-Bold" : "Helvetica").fontSize(10).fillColor("#0f172a").text(
+          String(text),
+          x + 5,
+          y + 8,
+          { width: c.width - 10, align: c.align || "left", lineBreak: false, ellipsis: true }
+        );
+      });
+    };
+
+    drawRow(tableTop, Object.fromEntries(cols.map((c) => [c.key, c.title])), true);
+
+    let y = tableTop + rowH;
+    lines.rows.forEach((l, i) => {
+      const row = {
+        idx: i + 1,
+        title: l.title,
+        qty: fmt(l.qty),
+        price: fmt(l.purchase_price),
+        markup: Number(l.markup_percent || 0).toLocaleString("ru-RU"),
+        sale: fmt(l.sale_price),
+        sum: fmt(l.line_sum),
+      };
+      drawRow(y, row, false);
+      y += rowH;
+    });
+
+    const totalsY = y + 14;
+    doc.font("Helvetica").fontSize(11).fillColor("#0f172a");
+    doc.text(`Pozitsiyalar soni: ${lines.rows.length}`, left, totalsY);
+    doc.font("Helvetica-Bold").fontSize(13).fillColor("#0f1e38").text(`Jami: ${fmt(p.total_sum)} so'm`, left, totalsY, { align: "right" });
+
+    const signY = totalsY + 46;
+    doc.font("Helvetica").fontSize(11).fillColor("#334155");
+    doc.text("Topshirdi: ____________________", left, signY);
+    doc.text("Qabul qildi: ____________________", left + 290, signY);
+
+    doc.end();
+  } catch (e) {
+    next(e);
+  }
+});
 app.get("/admin/orders", requireAdmin, async (_req,res,next)=>{ try { const r=await q(`SELECT o.*, b.title FROM customer_orders o JOIN books b ON b.id=o.book_id ORDER BY o.id DESC`); const rows=r.rows.map((o)=>`<tr><td>#${o.id}</td><td>${esc(o.batch_id || '-')}</td><td>${esc(o.title)}</td><td>${o.qty}</td><td>${esc(o.customer_name || "-")}</td><td>${esc(o.phone)}</td><td>${esc(o.source_name || '-')}</td><td>${money(o.total_sum)}</td><td>${esc(statusLabel(o.status))}</td></tr>`).join(""); res.send(page("Zakazlar", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin">← Admin</a></div><h2>Zakazlar</h2><table><tr><th>ID</th><th>Batch</th><th>Kitob</th><th>Soni</th><th>Mijoz</th><th>Telefon</th><th>Manba</th><th>Jami</th><th>Status</th></tr>${rows || `<tr><td colspan="9">Zakaz yo'q</td></tr>`}</table></div>`, { admin:true })); } catch(e){ next(e);} });
 app.get("/admin/reports", requireAdmin, async (_req,res,next)=>{ try {
   const stock=await q(`SELECT title, stock_qty, sale_price, purchase_price FROM books ORDER BY title`);
