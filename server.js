@@ -359,11 +359,11 @@ app.post("/telegram/webhook", async (req, res) => {
     const update = req.body || {};
     if (update.callback_query && update.callback_query.data) {
       const data = String(update.callback_query.data);
+      await tg("answerCallbackQuery", { callback_query_id: update.callback_query.id, text: "So'rov qabul qilindi ✅" });
       const mOrder = data.match(/^o:(\d+):(d|r)$/);
       const m2 = data.match(/^b2:([^:]+):(d|r)$/);
       const mLegacy = data.match(/^batch:(.+):(delivered|returned)$/);
       if (mOrder || m2 || mLegacy) {
-        await tg("answerCallbackQuery", { callback_query_id: update.callback_query.id, text: "Qabul qilindi ✅" });
         let batch = "";
         let status = "";
         if (mOrder) {
@@ -390,7 +390,6 @@ app.post("/telegram/webhook", async (req, res) => {
             await q(`INSERT INTO pending_feedback(chat_id, order_id) VALUES ($1,$2) ON CONFLICT (chat_id) DO UPDATE SET order_id=EXCLUDED.order_id, created_at=NOW()`, [chatId, orderId]);
             await tg("sendMessage", { chat_id: chatId, text: "Iltimos, taklif yoki shikoyatingizni bitta xabar qilib yozing. Biz uni guruhga yuboramiz." });
           }
-          await tg("answerCallbackQuery", { callback_query_id: update.callback_query.id, text: "Fikringizni yozing ✍️" });
         }
       }
     }
