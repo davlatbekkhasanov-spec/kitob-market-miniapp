@@ -58,6 +58,14 @@ function dateUz(v) {
   const yy = d.getFullYear();
   return `${dd}.${mm}.${yy}`;
 }
+function pickPdfFontPath(name) {
+  const candidates = [
+    path.join(__dirname, "fonts", name),
+    path.join("/usr/share/fonts/truetype/dejavu", name),
+    path.join("/usr/share/fonts", name),
+  ];
+  return candidates.find((p) => fs.existsSync(p)) || "";
+}
 function signedAdminValue() { return crypto.createHash("sha256").update(`${ADMIN_PIN}|${SESSION_SECRET}`).digest("hex"); }
 function isAdmin(req) { return req.signedCookies.admin === signedAdminValue(); }
 function requireAdmin(req, res, next) { if (!isAdmin(req)) return res.redirect("/admin/login"); next(); }
@@ -488,13 +496,19 @@ app.get("/admin/purchases/:id/pdf", requireAdmin, async (req, res, next) => {
 
     const doc = new PDFDocument({ margin:36, size: "A4" });
     doc.pipe(res);
+    const regularFont = pickPdfFontPath("DejaVuSans.ttf");
+    const boldFont = pickPdfFontPath("DejaVuSans-Bold.ttf");
+    if (regularFont) doc.registerFont("ui", regularFont);
+    if (boldFont) doc.registerFont("ui-bold", boldFont);
+    const fontRegular = regularFont ? "ui" : "Helvetica";
+    const fontBold = boldFont ? "ui-bold" : "Helvetica-Bold";
 
     const pageWidth = doc.page.width;
     const left = 36;
     const right = pageWidth - 36;
 
-    doc.font("Helvetica-Bold").fontSize(20).fillColor("#0f1e38").text(`Prihod nakladnoy № ${p.doc_no}`, left, 34, { align: "left" });
-    doc.font("Helvetica").fontSize(12).fillColor("#334155");
+    doc.font(fontBold).fontSize(20).fillColor("#0f1e38").text(`Prihod nakladnoy No ${p.doc_no}`, left, 34, { align: "left" });
+    doc.font(fontRegular).fontSize(12).fillColor("#334155");
     doc.text(`Sana: ${dateUz(p.doc_date)}`, left, 62);
     doc.text(`Tashkilot: ${orgName}`, left, 80);
     doc.text(`Ombor: ${warehouseName}`, left, 98);
@@ -504,7 +518,7 @@ app.get("/admin/purchases/:id/pdf", requireAdmin, async (req, res, next) => {
     const tableTop = 150;
     const rowH = 26;
     const cols = [
-      { key: "idx", title: "№", width: 32, align: "center" },
+      { key: "idx", title: "No", width: 32, align: "center" },
       { key: "title", title: "Nomi", width: 224, align: "left" },
       { key: "qty", title: "Soni", width: 52, align: "right" },
       { key: "price", title: "Narxi", width: 86, align: "right" },
@@ -527,7 +541,7 @@ app.get("/admin/purchases/:id/pdf", requireAdmin, async (req, res, next) => {
         const x = xBy[i];
         if (i > 0) doc.moveTo(x, y).lineTo(x, y + rowH).strokeColor("#cbd5e1").lineWidth(1).stroke();
         const text = row[c.key];
-        doc.font(isHeader ? "Helvetica-Bold" : "Helvetica").fontSize(10).fillColor("#0f172a").text(
+        doc.font(isHeader ? fontBold : fontRegular).fontSize(10).fillColor("#0f172a").text(
           String(text),
           x + 5,
           y + 8,
@@ -554,12 +568,12 @@ app.get("/admin/purchases/:id/pdf", requireAdmin, async (req, res, next) => {
     });
 
     const totalsY = y + 14;
-    doc.font("Helvetica").fontSize(11).fillColor("#0f172a");
+    doc.font(fontRegular).fontSize(11).fillColor("#0f172a");
     doc.text(`Pozitsiyalar soni: ${lines.rows.length}`, left, totalsY);
-    doc.font("Helvetica-Bold").fontSize(13).fillColor("#0f1e38").text(`Jami: ${fmt(p.total_sum)} so'm`, left, totalsY, { align: "right" });
+    doc.font(fontBold).fontSize(13).fillColor("#0f1e38").text(`Jami: ${fmt(p.total_sum)} so'm`, left, totalsY, { align: "right" });
 
     const signY = totalsY + 46;
-    doc.font("Helvetica").fontSize(11).fillColor("#334155");
+    doc.font(fontRegular).fontSize(11).fillColor("#334155");
     doc.text("Topshirdi: ____________________", left, signY);
     doc.text("Qabul qildi: ____________________", left + 290, signY);
 
@@ -568,7 +582,52 @@ app.get("/admin/purchases/:id/pdf", requireAdmin, async (req, res, next) => {
     next(e);
   }
 });
-app.get("/admin/orders", requireAdmin, async (_req,res,next)=>{ try { const r=await q(`SELECT o.*, b.title FROM customer_orders o JOIN books b ON b.id=o.book_id ORDER BY o.id DESC`); const rows=r.rows.map((o)=>`<tr><td>#${o.id}</td><td>${esc(o.batch_id || '-')}</td><td>${esc(o.title)}</td><td>${o.qty}</td><td>${esc(o.customer_name || "-")}</td><td>${esc(o.phone)}</td><td>${esc(o.source_name || '-')}</td><td>${money(o.total_sum)}</td><td>${esc(statusLabel(o.status))}</td></tr>`).join(""); res.send(page("Zakazlar", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin">← Admin</a></div><h2>Zakazlar</h2><table><tr><th>ID</th><th>Batch</th><th>Kitob</th><th>Soni</th><th>Mijoz</th><th>Telefon</th><th>Manba</th><th>Jami</th><th>Status</th></tr>${rows || `<tr><td colspan="9">Zakaz yo'q</td></tr>`}</table></div>`, { admin:true })); } catch(e){ next(e);} });
+app.get("/admin/orders", requireAdmin, async (_req,res,next)=>{ try { const r=await q(`SELECT o.*, b.title FROM customer_orders o JOIN books b ON b.id=o.book_id ORDER BY o.id DESC`); const rows=r.rows.map((o)=>`<tr><td>#${o.id}</td><td>${esc(o.batch_id || '-')}</td><td>${esc(o.title)}</td><td>${o.qty}</td><td>${esc(o.customer_name || "-")}</td><td>${esc(o.phone)}</td><td>${esc(o.source_name || '-')}</td><td>${money(o.total_sum)}</td><td>${esc(statusLabel(o.status))}</td><td><a class="btn soft" href="/admin/orders/${o.id}/receipt">Chek</a></td></tr>`).join(""); res.send(page("Zakazlar", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin">← Admin</a></div><h2>Zakazlar</h2><table><tr><th>ID</th><th>Batch</th><th>Kitob</th><th>Soni</th><th>Mijoz</th><th>Telefon</th><th>Manba</th><th>Jami</th><th>Status</th><th></th></tr>${rows || `<tr><td colspan="10">Zakaz yo'q</td></tr>`}</table></div>`, { admin:true })); } catch(e){ next(e);} });
+app.get("/admin/orders/:id/receipt", requireAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await q(`SELECT o.*, b.title, b.author, b.sale_price FROM customer_orders o JOIN books b ON b.id=o.book_id WHERE o.id=$1`, [id]);
+    if (!r.rows.length) return res.status(404).send("Topilmadi");
+    const o = r.rows[0];
+    const regularFont = pickPdfFontPath("DejaVuSans.ttf");
+    const boldFont = pickPdfFontPath("DejaVuSans-Bold.ttf");
+    const doc = new PDFDocument({ margin: 36, size: "A5" });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="CHECK-${o.id}.pdf"`);
+    doc.pipe(res);
+    if (regularFont) doc.registerFont("ui", regularFont);
+    if (boldFont) doc.registerFont("ui-bold", boldFont);
+    const fontRegular = regularFont ? "ui" : "Helvetica";
+    const fontBold = boldFont ? "ui-bold" : "Helvetica-Bold";
+    const fmt = (n) => Number(n || 0).toLocaleString("ru-RU");
+    const subtotal = Number(o.subtotal || (Number(o.qty || 0) * Number(o.sale_price || 0)));
+    doc.font(fontBold).fontSize(18).text("Xarid cheki", { align: "center" });
+    doc.moveDown(0.4);
+    doc.font(fontRegular).fontSize(11);
+    doc.text(`Sana: ${dateUz(o.created_at || new Date())}`);
+    doc.text(`Chek No: ${o.id}`);
+    doc.text(`Mijoz: ${o.customer_name || "-"}`);
+    doc.moveDown(0.5);
+    doc.rect(36, doc.y, doc.page.width - 72, 24).fillAndStroke("#f1f5f9", "#cbd5e1");
+    doc.fillColor("#0f172a").font(fontBold).fontSize(10).text("Nomi", 42, doc.y - 18, { width: 190 });
+    doc.text("Soni", 240, doc.y - 18, { width: 40, align: "right" });
+    doc.text("Narxi", 286, doc.y - 18, { width: 70, align: "right" });
+    doc.moveDown(0.8);
+    doc.font(fontRegular).fontSize(10);
+    doc.text(String(o.title || "-"), 42, doc.y, { width: 190 });
+    doc.text(fmt(o.qty), 240, doc.y, { width: 40, align: "right" });
+    doc.text(`${fmt(o.sale_price)} so'm`, 286, doc.y, { width: 70, align: "right" });
+    doc.moveDown(1.2);
+    doc.moveTo(36, doc.y).lineTo(doc.page.width - 36, doc.y).strokeColor("#cbd5e1").stroke();
+    doc.moveDown(0.5);
+    doc.font(fontBold).fontSize(13).text(`Jami to'lov: ${fmt(subtotal)} so'm`, 36, doc.y, { align: "right" });
+    doc.moveDown(0.2);
+    doc.font(fontRegular).fontSize(9).fillColor("#64748b").text("Eslatma: ushbu chekda доставка puli ko'rsatilmaydi.", { align: "right" });
+    doc.end();
+  } catch (e) {
+    next(e);
+  }
+});
 app.get("/admin/reports", requireAdmin, async (_req,res,next)=>{ try {
   const stock=await q(`SELECT title, stock_qty, sale_price, purchase_price FROM books ORDER BY title`);
   const rows=stock.rows.map((b)=>`<tr><td>${esc(b.title)}</td><td>${b.stock_qty}</td><td>${money(b.purchase_price)}</td><td>${money(b.sale_price)}</td><td>${money(Number(b.stock_qty) * Number(b.sale_price || 0))}</td></tr>`).join("");
