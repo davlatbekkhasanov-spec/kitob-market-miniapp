@@ -86,6 +86,10 @@ function normalizeTelegramTarget(value = "") {
   if (v.startsWith("@")) return v;
   return v.startsWith("https://t.me/") ? `@${v.split("/").pop()}` : `@${v.replace(/^@+/, "")}`;
 }
+function encodeBatchToken(batchId = "") { return Buffer.from(String(batchId), "utf8").toString("base64url"); }
+function decodeBatchToken(token = "") {
+  try { return Buffer.from(String(token), "base64url").toString("utf8"); } catch (_e) { return ""; }
+}
 
 function sourceMeta(code = "") {
   const value = String(code || "").trim();
@@ -196,9 +200,10 @@ function sourceBadge(sourceCode) {
 }
 async function sendBatchToGroup(batch) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_GROUP_CHAT_ID) return null;
+  const token = encodeBatchToken(batch.batch_id);
   const buttons = [[
-    { text: "✅ Yetkazildi", callback_data: `batch:${batch.batch_id}:delivered` },
-    { text: "↩️ Vozvrat", callback_data: `batch:${batch.batch_id}:returned` }
+    { text: "✅ Yetkazildi", callback_data: `b2:${token}:d` },
+    { text: "↩️ Vozvrat", callback_data: `b2:${token}:r` }
   ]];
   return await tg("sendMessage", { chat_id: TELEGRAM_GROUP_CHAT_ID, text: batch.text, reply_markup: { inline_keyboard: buttons }, disable_web_page_preview: false });
 }
@@ -326,9 +331,10 @@ async function updateGroupOrderMessage(batch) {
   if (!summary) return;
   const first = summary.rows.find(x => x.telegram_message_id && x.telegram_chat_id);
   if (!first) return;
+  const token = encodeBatchToken(summary.batch_id);
   const keyboard = summary.rows[0].status === "new" ? { inline_keyboard: [[
-    { text: "✅ Yetkazildi", callback_data: `batch:${summary.batch_id}:delivered` },
-    { text: "↩️ Vozvrat", callback_data: `batch:${summary.batch_id}:returned` }
+    { text: "✅ Yetkazildi", callback_data: `b2:${token}:d` },
+    { text: "↩️ Vozvrat", callback_data: `b2:${token}:r` }
   ]] } : undefined;
   await tg("editMessageText", { chat_id: first.telegram_chat_id, message_id: first.telegram_message_id, text: summary.text, reply_markup: keyboard, disable_web_page_preview: false });
 }
@@ -353,14 +359,16 @@ app.post("/telegram/webhook", async (req, res) => {
     const update = req.body || {};
     if (update.callback_query && update.callback_query.data) {
       const data = String(update.callback_query.data);
-      const m = data.match(/^batch:(.+):(delivered|returned)$/);
-      if (m) {
-        const batch = m[1];
-        const status = m[2];
+      const m2 = data.match(/^b2:([^:]+):(d|r)$/);
+      const mLegacy = data.match(/^batch:(.+):(delivered|returned)$/);
+      if (m2 || mLegacy) {
+        await tg("answerCallbackQuery", { callback_query_id: update.callback_query.id, text: "Qabul qilindi ✅" });
+        const batch = m2 ? decodeBatchToken(m2[1]) : mLegacy[1];
+        const status = m2 ? (m2[2] === "d" ? "delivered" : "returned") : mLegacy[2];
+        if (!batch) return res.json({ ok:true });
         await q(`UPDATE customer_orders SET status=$1 WHERE batch_id=$2`, [status, batch]);
         if (status === "delivered") await sendReceiptNotifications(batch);
         await updateGroupOrderMessage(batch);
-        await tg("answerCallbackQuery", { callback_query_id: update.callback_query.id, text: `Holat: ${statusLabel(status)}` });
       } else {
         const fb = data.match(/^feedback:(\d+)$/);
         if (fb) {
