@@ -17,7 +17,7 @@ const APP_URL = process.env.APP_URL || "https://kitob-market-miniapp-production.
 const IMGBB_API_KEY = process.env.IMGBB_API_KEY || "08fc0452211bdc806ac49694254bc485";
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID || "";
-const TELEGRAM_BOT_USERNAME = process.env.TELEGRAM_BOT_USERNAME || "";
+const TELEGRAM_BOT_USERNAME = String(process.env.TELEGRAM_BOT_USERNAME || "@kitob_maktab_shop_bot").replace(/^@+/, "");
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || "";
