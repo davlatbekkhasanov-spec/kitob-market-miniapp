@@ -519,12 +519,10 @@ app.get("/admin/purchases/:id/pdf", requireAdmin, async (req, res, next) => {
     const rowH = 26;
     const cols = [
       { key: "idx", title: "No", width: 32, align: "center" },
-      { key: "title", title: "Nomi", width: 224, align: "left" },
-      { key: "qty", title: "Soni", width: 52, align: "right" },
-      { key: "price", title: "Narxi", width: 86, align: "right" },
-      { key: "markup", title: "%", width: 45, align: "right" },
+      { key: "title", title: "Nomi", width: 260, align: "left" },
+      { key: "qty", title: "Soni", width: 60, align: "right" },
+      { key: "price", title: "Narxi", width: 85, align: "right" },
       { key: "sale", title: "Sotuv", width: 86, align: "right" },
-      { key: "sum", title: "Jami", width: 86, align: "right" },
     ];
 
     const fmt = (n) => Number(n || 0).toLocaleString("ru-RU");
@@ -559,9 +557,7 @@ app.get("/admin/purchases/:id/pdf", requireAdmin, async (req, res, next) => {
         title: l.title,
         qty: fmt(l.qty),
         price: fmt(l.purchase_price),
-        markup: Number(l.markup_percent || 0).toLocaleString("ru-RU"),
         sale: fmt(l.sale_price),
-        sum: fmt(l.line_sum),
       };
       drawRow(y, row, false);
       y += rowH;
