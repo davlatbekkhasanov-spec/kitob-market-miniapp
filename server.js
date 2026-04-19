@@ -197,26 +197,45 @@ function extFromMime(mime = "") { if (mime.includes("png")) return ".png"; if (m
 async function saveImage(file) {
   if (!file) return "";
 
-  const apiKey = IMGBB_API_KEY;
-  const base64 = file.buffer.toString("base64");
-
-  const resp = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      image: base64,
-    }),
-  });
-
-  const data = await resp.json();
-
-  if (data.success && data.data && data.data.url) {
-    return data.data.url;
+  if (HAS_CLOUDINARY) {
+    try {
+      const uploaded = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: CLOUDINARY_FOLDER, resource_type: "image" },
+          (err, result) => (err ? reject(err) : resolve(result)),
+        );
+        stream.end(file.buffer);
+      });
+      if (uploaded && uploaded.secure_url) {
+        return uploaded.secure_url;
+      }
+    } catch (_e) {
+      // Cloudinary ishlamasa, ImgBB va local fallbackga o'tamiz.
+    }
   }
 
-  throw new Error("ImgBB upload xatolik");
+  if (IMGBB_API_KEY) {
+    try {
+      const base64 = file.buffer.toString("base64");
+      const resp = await fetch(`https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ image: base64 }),
+      });
+      const data = await resp.json();
+      if (resp.ok && data.success && data.data && data.data.url) {
+        return data.data.url;
+      }
+    } catch (_e) {
+      // ImgBB ham ishlamasa local fallbackga o'tamiz.
+    }
+  }
+
+  // Railway kabi ephemeral diskda restartdan keyin local fayllar yo'qolib qolishi mumkin.
+  // Shuning uchun oxirgi fallback sifatida rasmni data URL ko'rinishida DBga saqlaymiz.
+  const mime = file.mimetype || "image/jpeg";
+  const base64 = file.buffer.toString("base64");
+  return `data:${mime};base64,${base64}`;
 }
 async function initDb() {
   await q(`CREATE TABLE IF NOT EXISTS counterparties (id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,phone TEXT DEFAULT '',note TEXT DEFAULT '',created_at TIMESTAMP NOT NULL DEFAULT NOW())`);
