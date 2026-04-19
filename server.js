@@ -71,6 +71,12 @@ function isAdmin(req) { return req.signedCookies.admin === signedAdminValue(); }
 function requireAdmin(req, res, next) { if (!isAdmin(req)) return res.redirect("/admin/login"); next(); }
 function isSecureRequest(req) { return req.secure || req.headers["x-forwarded-proto"] === "https"; }
 function statusLabel(status) { return ({ new: "Yangi", in_progress: "Jarayonda", delivered: "Yetkazildi", returned: "Vozvrat" })[String(status||"")] || String(status||""); }
+function normalizeTelegramTarget(value = "") {
+  const v = String(value || "").trim();
+  if (!v) return "";
+  if (v.startsWith("@")) return v;
+  return v.startsWith("https://t.me/") ? `@${v.split("/").pop()}` : `@${v.replace(/^@+/, "")}`;
+}
 
 function sourceMeta(code = "") {
   const value = String(code || "").trim();
@@ -197,10 +203,11 @@ async function getBatchSummary(batch) {
   const locPart = first.location_url ? `\n📍 Lokatsiya: ${first.location_url}` : "";
   const total = rows.reduce((a, x) => a + Number(x.total_sum || 0), 0);
   const status = statusLabel(first.status);
+  const receiptPart = first.status === "delivered" && rows.some((x) => x.receipt_sent) ? " | 🧾 Chek yuborildi" : "";
   return {
     batch_id: batch,
     rows,
-    text: `🛒 ${batch}\n${items}\n👤 Mijoz: ${first.customer_name || "-"}\n📞 Telefon: ${first.phone}\n🏠 Manzil: ${first.address_text || "-"}${locPart}${sourcePart}\n💵 Jami: ${money(total)}\n📌 Holat: ${status}`
+    text: `🛒 ${batch}\n${items}\n👤 Mijoz: ${first.customer_name || "-"}\n📞 Telefon: ${first.phone}\n🏠 Manzil: ${first.address_text || "-"}${locPart}${sourcePart}\n💵 Jami: ${money(total)}\n📌 Holat: ${status}${receiptPart}`
   };
 }
 function page(title, body, opts = {}) {
@@ -271,6 +278,9 @@ async function initDb() {
   await q(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS source_code TEXT DEFAULT ''`);
   await q(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT ''`);
   await q(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS source_name TEXT DEFAULT ''`);
+  await q(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS customer_telegram TEXT DEFAULT ''`);
+  await q(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS receipt_sent BOOLEAN NOT NULL DEFAULT FALSE`);
+  await q(`CREATE TABLE IF NOT EXISTS pending_feedback (chat_id TEXT PRIMARY KEY, order_id BIGINT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT NOW())`);
   await q(`CREATE TABLE IF NOT EXISTS categories (id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL UNIQUE,created_at TIMESTAMP NOT NULL DEFAULT NOW())`);
   await q(`ALTER TABLE books ADD COLUMN IF NOT EXISTS category_id BIGINT REFERENCES categories(id)`);
   await q(`INSERT INTO categories(name) VALUES ('Kitob'),('Konstovar') ON CONFLICT (name) DO NOTHING`);
@@ -312,17 +322,59 @@ async function updateGroupOrderMessage(batch) {
   ]] } : undefined;
   await tg("editMessageText", { chat_id: first.telegram_chat_id, message_id: first.telegram_message_id, text: summary.text, reply_markup: keyboard, disable_web_page_preview: false });
 }
+async function sendReceiptNotifications(batch) {
+  const r = await q(`SELECT id, customer_name, customer_telegram, subtotal FROM customer_orders WHERE batch_id=$1 ORDER BY id`, [batch]);
+  for (const order of r.rows) {
+    const target = normalizeTelegramTarget(order.customer_telegram || "");
+    if (!target) continue;
+    const text = `🧾 Xarid cheki tayyor\nZakaz #${order.id}\nJami to'lov: ${money(order.subtotal)}\n\nTalab va takliflar bo'lsa, pastdagi tugmani bosing.`;
+    const sent = await tg("sendMessage", {
+      chat_id: target,
+      text,
+      reply_markup: { inline_keyboard: [[{ text: "✍️ Talab va taklif yuborish", callback_data: `feedback:${order.id}` }]] }
+    });
+    if (sent && sent.ok) {
+      await q(`UPDATE customer_orders SET receipt_sent=TRUE WHERE id=$1`, [order.id]);
+    }
+  }
+}
 app.post("/telegram/webhook", async (req, res) => {
   try {
     const update = req.body || {};
     if (update.callback_query && update.callback_query.data) {
-      const m = String(update.callback_query.data).match(/^batch:([^:]+):(in_progress|delivered|returned)$/);
+      const data = String(update.callback_query.data);
+      const m = data.match(/^batch:(.+):(delivered|returned)$/);
       if (m) {
         const batch = m[1];
         const status = m[2];
         await q(`UPDATE customer_orders SET status=$1 WHERE batch_id=$2`, [status, batch]);
+        if (status === "delivered") await sendReceiptNotifications(batch);
         await updateGroupOrderMessage(batch);
         await tg("answerCallbackQuery", { callback_query_id: update.callback_query.id, text: `Holat: ${statusLabel(status)}` });
+      } else {
+        const fb = data.match(/^feedback:(\d+)$/);
+        if (fb) {
+          const orderId = Number(fb[1]);
+          const chatId = String(update.callback_query.from?.id || "");
+          if (chatId) {
+            await q(`INSERT INTO pending_feedback(chat_id, order_id) VALUES ($1,$2) ON CONFLICT (chat_id) DO UPDATE SET order_id=EXCLUDED.order_id, created_at=NOW()`, [chatId, orderId]);
+            await tg("sendMessage", { chat_id: chatId, text: "Iltimos, taklif yoki shikoyatingizni bitta xabar qilib yozing. Biz uni guruhga yuboramiz." });
+          }
+          await tg("answerCallbackQuery", { callback_query_id: update.callback_query.id, text: "Fikringizni yozing ✍️" });
+        }
+      }
+    }
+    if (update.message && update.message.text && update.message.chat && update.message.chat.type === "private") {
+      const chatId = String(update.message.chat.id);
+      const pending = await q(`SELECT order_id FROM pending_feedback WHERE chat_id=$1`, [chatId]);
+      if (pending.rows.length) {
+        const orderId = pending.rows[0].order_id;
+        const text = String(update.message.text || "").trim();
+        if (text) {
+          await tg("sendMessage", { chat_id: TELEGRAM_GROUP_CHAT_ID, text: `💬 Mijoz fikri (order #${orderId}):\n${text}` });
+        }
+        await q(`DELETE FROM pending_feedback WHERE chat_id=$1`, [chatId]);
+        await tg("sendMessage", { chat_id: chatId, text: "Rahmat! Fikringiz qabul qilindi ✅" });
       }
     }
     res.json({ ok:true });
@@ -373,7 +425,7 @@ app.get("/order/:id", async (req, res, next) => { try {
   const sourceCode = getSourceCode(req) || String(req.cookies.source_code || "");
   const sourceTag = sourceBadge(sourceCode);
   const count = await cartCount(req);
-  res.send(page("Buyurtma", `<div class="panel" style="max-width:780px;margin:0 auto"><div class="actions" style="margin-bottom:10px"><a class="btn dark" href="/">← Ortga</a><a class="btn soft" href="/cart">Savatcha (${count})</a></div><div class="card" style="margin-bottom:12px"><div class="grid2"><div class="book-image" style="height:300px">${b.image ? `<img src="${esc(b.image)}" alt="${esc(b.title)}" />` : "📚"}</div><div><div class="title" style="margin-top:0">${esc(b.title)}</div><div class="muted">${esc(b.author || "")}</div><div class="price">${money(b.sale_price)}</div><div class="stock ok">Mavjud: ${b.stock_qty} dona</div><div class="tag" style="margin-top:14px">Dostavka: ${money(DELIVERY_FEE)}</div><div style="margin-top:10px">${sourceTag}</div></div></div></div><form class="form" method="post" action="/order/${b.id}"><input type="hidden" name="source_code" value="${esc(sourceCode)}" /><div class="grid2"><input name="customer_name" placeholder="Ismingiz" /><input name="phone" placeholder="Telefon raqam" required /></div><div class="grid2"><input type="number" name="qty" min="1" max="${b.stock_qty}" value="1" id="qtyInput" required /><button type="button" class="btn soft" id="locBtn" onclick="getLocation()">📍 Lokatsiyani yuborish</button></div><input type="hidden" name="latitude" id="latField" /><input type="hidden" name="longitude" id="lngField" /><input type="hidden" name="location_url" id="locationUrlField" /><textarea name="address_text" id="addressText" placeholder="Manzil yoki lokatsiya havolasi"></textarea><div class="small" id="locText">Lokatsiya hali tanlanmadi</div><div class="order-summary"><div>1 dona narx: <b>${money(b.sale_price)}</b></div><div>Dostavka: <b>${money(DELIVERY_FEE)}</b></div><div style="margin-top:8px">Jami: <b id="totalText">${money(Number(b.sale_price) + DELIVERY_FEE)}</b></div></div><div class="actions"><button type="submit" class="btn green">Zakaz yuborish</button><button type="submit" formmethod="post" formaction="/cart/add/${b.id}" class="btn soft">Savatchaga qo'shish</button></div></form></div><script>const unitPrice=${Number(b.sale_price)};const deliveryFee=${DELIVERY_FEE};const qtyInput=document.getElementById('qtyInput');const totalText=document.getElementById('totalText');const latField=document.getElementById('latField');const lngField=document.getElementById('lngField');const locationUrlField=document.getElementById('locationUrlField');const locText=document.getElementById('locText');const locBtn=document.getElementById('locBtn');function updateTotal(){const qty=Number(qtyInput.value||1);const total=(qty*unitPrice)+deliveryFee;totalText.textContent=new Intl.NumberFormat('ru-RU').format(total)+" so'm";}qtyInput.addEventListener('input',updateTotal);updateTotal();function applyLocation(lat,lng,label){latField.value=lat;lngField.value=lng;locationUrlField.value="https://maps.google.com/?q="+lat+","+lng;try{localStorage.setItem('last_location_lat',String(lat));localStorage.setItem('last_location_lng',String(lng));}catch(_e){}locText.textContent=label||"✅ Lokatsiya olindi: "+Number(lat).toFixed(5)+", "+Number(lng).toFixed(5);locBtn.textContent='✅ Tayyor';}function requestLocation(options,onError){navigator.geolocation.getCurrentPosition(function(pos){applyLocation(pos.coords.latitude,pos.coords.longitude);},onError,options);}function getLocation(){if(!navigator.geolocation){locText.textContent="Geolokatsiya yo'q. Telefon lokatsiya ruxsatini yoqing yoki manzilga aniq Google Maps link yozing";return;}locBtn.disabled=true;locBtn.textContent='⏳ Lokatsiya olinmoqda...';requestLocation({enableHighAccuracy:true,timeout:30000,maximumAge:0},function(err){locBtn.disabled=false;locBtn.textContent='📍 Lokatsiyani yuborish';const reason=err&&err.message?err.message:'Ruxsat berilmagan';locText.textContent='❌ Aniq lokatsiya olinmadi ('+reason+'). Iltimos telefon lokatsiyasiga ruxsat bering yoki manzilga aniq Google Maps link kiriting.';});}</script>`, { admin:isAdmin(req) }));
+  res.send(page("Buyurtma", `<div class="panel" style="max-width:780px;margin:0 auto"><div class="actions" style="margin-bottom:10px"><a class="btn dark" href="/">← Ortga</a><a class="btn soft" href="/cart">Savatcha (${count})</a></div><div class="card" style="margin-bottom:12px"><div class="grid2"><div class="book-image" style="height:300px">${b.image ? `<img src="${esc(b.image)}" alt="${esc(b.title)}" />` : "📚"}</div><div><div class="title" style="margin-top:0">${esc(b.title)}</div><div class="muted">${esc(b.author || "")}</div><div class="price">${money(b.sale_price)}</div><div class="stock ok">Mavjud: ${b.stock_qty} dona</div><div class="tag" style="margin-top:14px">Dostavka: ${money(DELIVERY_FEE)}</div><div style="margin-top:10px">${sourceTag}</div></div></div></div><form class="form" method="post" action="/order/${b.id}"><input type="hidden" name="source_code" value="${esc(sourceCode)}" /><div class="grid2"><input name="customer_name" placeholder="Ismingiz" /><input name="phone" placeholder="Telefon raqam" required /></div><input name="customer_telegram" placeholder="Telegram username (@username, ixtiyoriy)" /><div class="grid2"><input type="number" name="qty" min="1" max="${b.stock_qty}" value="1" id="qtyInput" required /><button type="button" class="btn soft" id="locBtn" onclick="getLocation()">📍 Lokatsiyani yuborish</button></div><input type="hidden" name="latitude" id="latField" /><input type="hidden" name="longitude" id="lngField" /><input type="hidden" name="location_url" id="locationUrlField" /><textarea name="address_text" id="addressText" placeholder="Manzil yoki lokatsiya havolasi"></textarea><div class="small" id="locText">Lokatsiya hali tanlanmadi</div><div class="order-summary"><div>1 dona narx: <b>${money(b.sale_price)}</b></div><div>Dostavka: <b>${money(DELIVERY_FEE)}</b></div><div style="margin-top:8px">Jami: <b id="totalText">${money(Number(b.sale_price) + DELIVERY_FEE)}</b></div></div><div class="actions"><button type="submit" class="btn green">Zakaz yuborish</button><button type="submit" formmethod="post" formaction="/cart/add/${b.id}" class="btn soft">Savatchaga qo'shish</button></div></form></div><script>const unitPrice=${Number(b.sale_price)};const deliveryFee=${DELIVERY_FEE};const qtyInput=document.getElementById('qtyInput');const totalText=document.getElementById('totalText');const latField=document.getElementById('latField');const lngField=document.getElementById('lngField');const locationUrlField=document.getElementById('locationUrlField');const locText=document.getElementById('locText');const locBtn=document.getElementById('locBtn');function updateTotal(){const qty=Number(qtyInput.value||1);const total=(qty*unitPrice)+deliveryFee;totalText.textContent=new Intl.NumberFormat('ru-RU').format(total)+" so'm";}qtyInput.addEventListener('input',updateTotal);updateTotal();function applyLocation(lat,lng,label){latField.value=lat;lngField.value=lng;locationUrlField.value="https://maps.google.com/?q="+lat+","+lng;try{localStorage.setItem('last_location_lat',String(lat));localStorage.setItem('last_location_lng',String(lng));}catch(_e){}locText.textContent=label||"✅ Lokatsiya olindi: "+Number(lat).toFixed(5)+", "+Number(lng).toFixed(5);locBtn.textContent='✅ Tayyor';}function requestLocation(options,onError){navigator.geolocation.getCurrentPosition(function(pos){applyLocation(pos.coords.latitude,pos.coords.longitude);},onError,options);}function getLocation(){if(!navigator.geolocation){locText.textContent="Geolokatsiya yo'q. Telefon lokatsiya ruxsatini yoqing yoki manzilga aniq Google Maps link yozing";return;}locBtn.disabled=true;locBtn.textContent='⏳ Lokatsiya olinmoqda...';requestLocation({enableHighAccuracy:true,timeout:30000,maximumAge:0},function(err){locBtn.disabled=false;locBtn.textContent='📍 Lokatsiyani yuborish';const reason=err&&err.message?err.message:'Ruxsat berilmagan';locText.textContent='❌ Aniq lokatsiya olinmadi ('+reason+'). Iltimos telefon lokatsiyasiga ruxsat bering yoki manzilga aniq Google Maps link kiriting.';});}</script>`, { admin:isAdmin(req) }));
 } catch (e) { next(e); } });
 
 app.post("/order/:id", async (req, res, next) => { const client = await pool.connect(); try {
@@ -384,7 +436,7 @@ app.post("/order/:id", async (req, res, next) => { const client = await pool.con
   const location = resolveLocation(req.body.latitude, req.body.longitude, req.body.location_url, req.body.address_text);
   const meta = sourceMeta(req.body.source_code || req.cookies.source_code || "");
   const batch = await nextOrderBatchId(client);
-  const inserted=await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`, [id, qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, DELIVERY_FEE, subtotal, total, batch, meta.code, meta.type, meta.name]);
+  const inserted=await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name, customer_telegram) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`, [id, qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, DELIVERY_FEE, subtotal, total, batch, meta.code, meta.type, meta.name, normalizeTelegramTarget(req.body.customer_telegram || "")]);
   await client.query(`UPDATE books SET stock_qty = stock_qty - $1, updated_at=NOW() WHERE id=$2`, [qty, id]);
   await client.query("COMMIT");
   const summary = await getBatchSummary(batch);
@@ -415,7 +467,7 @@ app.get("/cart", async (req, res, next) => { try {
   const subtotal = items.reduce((a, x) => a + Number(x.sale_price || 0) * Number(x.qty || 0), 0);
   const total = subtotal + (items.length ? DELIVERY_FEE : 0);
   const body = items.length ? items.map(cartItemHtml).join("") : `<div class="panel">Savatcha bo'sh</div>`;
-  res.send(page("Savatcha", `<div class="panel" style="max-width:900px;margin:0 auto"><div class="actions" style="margin-bottom:12px"><a class="btn dark" href="/">← Davom etish</a></div><h2>Savatcha</h2>${sourceBadge(sourceCode)}${body}${items.length ? `<form class="form" method="post" action="/checkout" style="margin-top:16px"><input type="hidden" name="source_code" value="${esc(sourceCode)}" /><div class="grid2"><input name="customer_name" placeholder="Ismingiz" /><input name="phone" placeholder="Telefon raqam" required /></div><div class="grid2"><button type="button" class="btn soft" id="cartLocBtn" onclick="getCartLocation()">📍 Lokatsiyani yuborish</button><div class="small" id="cartLocText">Lokatsiya hali tanlanmadi</div></div><input type="hidden" name="latitude" id="cartLatField" /><input type="hidden" name="longitude" id="cartLngField" /><input type="hidden" name="location_url" id="cartLocationUrlField" /><textarea name="address_text" placeholder="Manzil yoki lokatsiya havolasi"></textarea><div class="order-summary"><div>Mahsulotlar: <b>${money(subtotal)}</b></div><div>Dostavka: <b>${money(items.length ? DELIVERY_FEE : 0)}</b></div><div style="margin-top:8px">Jami: <b>${money(total)}</b></div></div><button class="btn green" type="submit">Bitta zakaz qilish</button></form><script>function setCartLocation(lat,lng,label){document.getElementById('cartLatField').value=lat;document.getElementById('cartLngField').value=lng;document.getElementById('cartLocationUrlField').value='https://maps.google.com/?q='+lat+','+lng;try{localStorage.setItem('last_location_lat',String(lat));localStorage.setItem('last_location_lng',String(lng));}catch(_e){}document.getElementById('cartLocText').textContent=label||'✅ Lokatsiya olindi';document.getElementById('cartLocBtn').textContent='✅ Tayyor';}function getCartLocation(){const btn=document.getElementById('cartLocBtn');const text=document.getElementById('cartLocText');if(!navigator.geolocation){text.textContent="Geolokatsiya yo'q. Telefon lokatsiya ruxsatini yoqing yoki manzilga aniq Google Maps link yozing";return;}btn.disabled=true;btn.textContent='⏳ Lokatsiya olinmoqda...';navigator.geolocation.getCurrentPosition(function(pos){setCartLocation(pos.coords.latitude,pos.coords.longitude);},function(err){btn.disabled=false;btn.textContent='📍 Lokatsiyani yuborish';const reason=err&&err.message?err.message:'Ruxsat berilmagan';text.textContent='❌ Aniq lokatsiya olinmadi ('+reason+'). Iltimos lokatsiyaga ruxsat bering yoki manzilga aniq Google Maps link kiriting.';},{enableHighAccuracy:true,timeout:30000,maximumAge:0});}</script>` : ""}</div>`, { admin:isAdmin(req) }));
+  res.send(page("Savatcha", `<div class="panel" style="max-width:900px;margin:0 auto"><div class="actions" style="margin-bottom:12px"><a class="btn dark" href="/">← Davom etish</a></div><h2>Savatcha</h2>${sourceBadge(sourceCode)}${body}${items.length ? `<form class="form" method="post" action="/checkout" style="margin-top:16px"><input type="hidden" name="source_code" value="${esc(sourceCode)}" /><div class="grid2"><input name="customer_name" placeholder="Ismingiz" /><input name="phone" placeholder="Telefon raqam" required /></div><input name="customer_telegram" placeholder="Telegram username (@username, ixtiyoriy)" /><div class="grid2"><button type="button" class="btn soft" id="cartLocBtn" onclick="getCartLocation()">📍 Lokatsiyani yuborish</button><div class="small" id="cartLocText">Lokatsiya hali tanlanmadi</div></div><input type="hidden" name="latitude" id="cartLatField" /><input type="hidden" name="longitude" id="cartLngField" /><input type="hidden" name="location_url" id="cartLocationUrlField" /><textarea name="address_text" placeholder="Manzil yoki lokatsiya havolasi"></textarea><div class="order-summary"><div>Mahsulotlar: <b>${money(subtotal)}</b></div><div>Dostavka: <b>${money(items.length ? DELIVERY_FEE : 0)}</b></div><div style="margin-top:8px">Jami: <b>${money(total)}</b></div></div><button class="btn green" type="submit">Bitta zakaz qilish</button></form><script>function setCartLocation(lat,lng,label){document.getElementById('cartLatField').value=lat;document.getElementById('cartLngField').value=lng;document.getElementById('cartLocationUrlField').value='https://maps.google.com/?q='+lat+','+lng;try{localStorage.setItem('last_location_lat',String(lat));localStorage.setItem('last_location_lng',String(lng));}catch(_e){}document.getElementById('cartLocText').textContent=label||'✅ Lokatsiya olindi';document.getElementById('cartLocBtn').textContent='✅ Tayyor';}function getCartLocation(){const btn=document.getElementById('cartLocBtn');const text=document.getElementById('cartLocText');if(!navigator.geolocation){text.textContent="Geolokatsiya yo'q. Telefon lokatsiya ruxsatini yoqing yoki manzilga aniq Google Maps link yozing";return;}btn.disabled=true;btn.textContent='⏳ Lokatsiya olinmoqda...';navigator.geolocation.getCurrentPosition(function(pos){setCartLocation(pos.coords.latitude,pos.coords.longitude);},function(err){btn.disabled=false;btn.textContent='📍 Lokatsiyani yuborish';const reason=err&&err.message?err.message:'Ruxsat berilmagan';text.textContent='❌ Aniq lokatsiya olinmadi ('+reason+'). Iltimos lokatsiyaga ruxsat bering yoki manzilga aniq Google Maps link kiriting.';},{enableHighAccuracy:true,timeout:30000,maximumAge:0});}</script>` : ""}</div>`, { admin:isAdmin(req) }));
 } catch (e) { next(e); } });
 
 app.post("/cart/update/:id", async (req, res, next) => { try {
@@ -455,8 +507,8 @@ app.post("/checkout", async (req, res, next) => { const client = await pool.conn
     const lineTotal = subtotal + delivery;
     total += lineTotal;
     const location = resolveLocation(req.body.latitude, req.body.longitude, req.body.location_url, req.body.address_text);
-    await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, [item.book_id, item.qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, delivery, subtotal, lineTotal, batch, meta.code, meta.type, meta.name]);
+    await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name, customer_telegram)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, [item.book_id, item.qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, delivery, subtotal, lineTotal, batch, meta.code, meta.type, meta.name, normalizeTelegramTarget(req.body.customer_telegram || "")]);
     await client.query(`UPDATE books SET stock_qty = stock_qty - $1, updated_at=NOW() WHERE id=$2`, [item.qty, item.book_id]);
   }
   await client.query(`DELETE FROM cart_items WHERE session_id=$1`, [sid]);
@@ -519,10 +571,9 @@ app.get("/admin/purchases/:id/pdf", requireAdmin, async (req, res, next) => {
     const rowH = 26;
     const cols = [
       { key: "idx", title: "No", width: 32, align: "center" },
-      { key: "title", title: "Nomi", width: 260, align: "left" },
-      { key: "qty", title: "Soni", width: 60, align: "right" },
-      { key: "price", title: "Narxi", width: 85, align: "right" },
-      { key: "sale", title: "Sotuv", width: 86, align: "right" },
+      { key: "title", title: "Nomi", width: 300, align: "left" },
+      { key: "qty", title: "Soni", width: 80, align: "right" },
+      { key: "price", title: "Narxi", width: 111, align: "right" },
     ];
 
     const fmt = (n) => Number(n || 0).toLocaleString("ru-RU");
@@ -557,7 +608,6 @@ app.get("/admin/purchases/:id/pdf", requireAdmin, async (req, res, next) => {
         title: l.title,
         qty: fmt(l.qty),
         price: fmt(l.purchase_price),
-        sale: fmt(l.sale_price),
       };
       drawRow(y, row, false);
       y += rowH;
@@ -597,28 +647,30 @@ app.get("/admin/orders/:id/receipt", requireAdmin, async (req, res, next) => {
     const fontBold = boldFont ? "ui-bold" : "Helvetica-Bold";
     const fmt = (n) => Number(n || 0).toLocaleString("ru-RU");
     const subtotal = Number(o.subtotal || (Number(o.qty || 0) * Number(o.sale_price || 0)));
-    doc.font(fontBold).fontSize(18).text("Xarid cheki", { align: "center" });
-    doc.moveDown(0.4);
-    doc.font(fontRegular).fontSize(11);
-    doc.text(`Sana: ${dateUz(o.created_at || new Date())}`);
-    doc.text(`Chek No: ${o.id}`);
-    doc.text(`Mijoz: ${o.customer_name || "-"}`);
-    doc.moveDown(0.5);
-    doc.rect(36, doc.y, doc.page.width - 72, 24).fillAndStroke("#f1f5f9", "#cbd5e1");
-    doc.fillColor("#0f172a").font(fontBold).fontSize(10).text("Nomi", 42, doc.y - 18, { width: 190 });
-    doc.text("Soni", 240, doc.y - 18, { width: 40, align: "right" });
-    doc.text("Narxi", 286, doc.y - 18, { width: 70, align: "right" });
-    doc.moveDown(0.8);
-    doc.font(fontRegular).fontSize(10);
-    doc.text(String(o.title || "-"), 42, doc.y, { width: 190 });
-    doc.text(fmt(o.qty), 240, doc.y, { width: 40, align: "right" });
-    doc.text(`${fmt(o.sale_price)} so'm`, 286, doc.y, { width: 70, align: "right" });
-    doc.moveDown(1.2);
-    doc.moveTo(36, doc.y).lineTo(doc.page.width - 36, doc.y).strokeColor("#cbd5e1").stroke();
-    doc.moveDown(0.5);
-    doc.font(fontBold).fontSize(13).text(`Jami to'lov: ${fmt(subtotal)} so'm`, 36, doc.y, { align: "right" });
-    doc.moveDown(0.2);
-    doc.font(fontRegular).fontSize(9).fillColor("#64748b").text("Eslatma: ushbu chekda доставка puli ko'rsatilmaydi.", { align: "right" });
+    const left = 36;
+    const right = doc.page.width - 36;
+    doc.font(fontBold).fontSize(20).fillColor("#0f1e38").text("Xarid cheki", left, 28, { align: "center", width: right - left });
+    doc.font(fontRegular).fontSize(11).fillColor("#0f172a");
+    doc.text(`Sana: ${dateUz(o.created_at || new Date())}`, left, 72);
+    doc.text(`Chek No: ${o.id}`, left, 90);
+    doc.text(`Mijoz: ${o.customer_name || "-"}`, left, 108);
+    const top = 136;
+    const cols = [
+      { key: "title", title: "Nomi", x: left, w: 190, align: "left" },
+      { key: "qty", title: "Soni", x: left + 190, w: 60, align: "right" },
+      { key: "price", title: "Narxi", x: left + 250, w: right - (left + 250), align: "right" }
+    ];
+    doc.rect(left, top, right - left, 26).fillAndStroke("#edf2ff", "#cbd5e1");
+    cols.forEach((c) => doc.font(fontBold).fontSize(11).fillColor("#0f172a").text(c.title, c.x + 6, top + 8, { width: c.w - 12, align: c.align }));
+    doc.rect(left, top + 26, right - left, 34).fillAndStroke("#ffffff", "#cbd5e1");
+    doc.font(fontRegular).fontSize(11).fillColor("#0f172a");
+    doc.text(String(o.title || "-"), cols[0].x + 6, top + 38, { width: cols[0].w - 12, align: "left", ellipsis: true });
+    doc.text(fmt(o.qty), cols[1].x + 6, top + 38, { width: cols[1].w - 12, align: "right" });
+    doc.text(`${fmt(o.sale_price)} so'm`, cols[2].x + 6, top + 38, { width: cols[2].w - 12, align: "right" });
+    const totalY = top + 84;
+    doc.moveTo(left, totalY).lineTo(right, totalY).strokeColor("#cbd5e1").stroke();
+    doc.font(fontBold).fontSize(16).fillColor("#0f1e38").text(`Jami to'lov: ${fmt(subtotal)} so'm`, left, totalY + 10, { width: right - left, align: "right" });
+    doc.font(fontRegular).fontSize(9).fillColor("#64748b").text("Eslatma: ushbu chekda доставка puli ko'rsatilmaydi.", left, totalY + 34, { width: right - left, align: "right" });
     doc.end();
   } catch (e) {
     next(e);
