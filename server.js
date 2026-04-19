@@ -231,11 +231,11 @@ async function saveImage(file) {
     }
   }
 
-  const ext = extFromMime(file.mimetype);
-  const filename = `${Date.now()}-${crypto.randomBytes(6).toString("hex")}${ext}`;
-  const filepath = path.join(UPLOAD_DIR, filename);
-  await fs.promises.writeFile(filepath, file.buffer);
-  return `/uploads/${filename}`;
+  // Railway kabi ephemeral diskda restartdan keyin local fayllar yo'qolib qolishi mumkin.
+  // Shuning uchun oxirgi fallback sifatida rasmni data URL ko'rinishida DBga saqlaymiz.
+  const mime = file.mimetype || "image/jpeg";
+  const base64 = file.buffer.toString("base64");
+  return `data:${mime};base64,${base64}`;
 }
 async function initDb() {
   await q(`CREATE TABLE IF NOT EXISTS counterparties (id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,phone TEXT DEFAULT '',note TEXT DEFAULT '',created_at TIMESTAMP NOT NULL DEFAULT NOW())`);
