@@ -96,6 +96,16 @@ function statusActionSig(orderId, status) {
 function statusActionUrl(orderId, status) {
   return `${APP_URL}/telegram/status/${orderId}/${status}/${statusActionSig(orderId, status)}`;
 }
+function statusKeyboard(firstOrderId) {
+  const orderId = Number(firstOrderId || 0);
+  if (!orderId) return undefined;
+  return {
+    inline_keyboard: [[
+      { text: "✅ Yetkazildi", callback_data: `o:${orderId}:d` },
+      { text: "↩️ Vozvrat", callback_data: `o:${orderId}:r` }
+    ]]
+  };
+}
 
 function sourceMeta(code = "") {
   const value = String(code || "").trim();
