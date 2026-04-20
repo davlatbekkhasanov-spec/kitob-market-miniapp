@@ -1,0 +1,9 @@
+QISQA TUZATISHLAR RO'YXATI
+
+1. node-fetch fallback qo'shildi
+2. dotenv qo'shildi
+3. DATABASE_URL bo'lmasa server to'xtaydi va aniq xabar chiqaradi
+4. SESSION_SECRET va ADMIN_PIN default bo'lsa warning beradi
+5. saveImage() ichida base64 DB fallback olib tashlandi
+6. /health endpoint qo'shildi
+7. unhandledRejection / uncaughtException loglari qo'shildi
