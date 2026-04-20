@@ -216,8 +216,7 @@ function sourceBadge(sourceCode) {
 }
 async function sendBatchToGroup(batch) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_GROUP_CHAT_ID) return null;
-  const firstOrderId = Number(batch.rows?.[0]?.id || 0);
-  return await tg("sendMessage", { chat_id: TELEGRAM_GROUP_CHAT_ID, text: batch.text, reply_markup: statusKeyboard(firstOrderId), disable_web_page_preview: false });
+  return await tg("sendMessage", { chat_id: TELEGRAM_GROUP_CHAT_ID, text: batch.text, disable_web_page_preview: false });
 }
 async function getBatchSummary(batch) {
   const r = await q(`SELECT o.*, b.title AS book_title FROM customer_orders o JOIN books b ON b.id=o.book_id WHERE o.batch_id=$1 ORDER BY o.id`, [batch]);
@@ -353,9 +352,7 @@ async function updateGroupOrderMessage(batch) {
   if (!summary) return;
   const first = summary.rows.find(x => x.telegram_message_id && x.telegram_chat_id);
   if (!first) return;
-  const firstOrderId = Number(summary.rows?.[0]?.id || 0);
-  const keyboard = summary.rows[0].status === "new" ? statusKeyboard(firstOrderId) : undefined;
-  await tg("editMessageText", { chat_id: first.telegram_chat_id, message_id: first.telegram_message_id, text: summary.text, reply_markup: keyboard, disable_web_page_preview: false });
+  await tg("editMessageText", { chat_id: first.telegram_chat_id, message_id: first.telegram_message_id, text: summary.text, disable_web_page_preview: false });
 }
 async function sendReceiptNotifications(batch) {
   const r = await q(`SELECT id, customer_name, customer_telegram, subtotal FROM customer_orders WHERE batch_id=$1 ORDER BY id`, [batch]);
