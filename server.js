@@ -334,7 +334,15 @@ async function nextOrderBatchId(client) {
   return value > 0 ? `Zakaz №${value}` : batchIdFallback();
 }
 function buildLocationUrl(lat, lng) { return (!lat || !lng) ? "" : `https://maps.google.com/?q=${encodeURIComponent(lat)},${encodeURIComponent(lng)}`; }
-async function tg(method, payload) { if (!TELEGRAM_BOT_TOKEN) return null; const resp = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)}); return await resp.json().catch(() => null); }
+async function tg(method, payload) {
+  if (!TELEGRAM_BOT_TOKEN) return null;
+  try {
+    const resp = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
+    return await resp.json().catch(() => null);
+  } catch (_e) {
+    return null;
+  }
+}
 function telegramOrderText(order) { return order.text || ""; }
 async function sendOrderToGroup(order) { return await sendBatchToGroup(order); }
 async function updateGroupOrderMessage(batch) {
@@ -394,7 +402,7 @@ app.post("/telegram/webhook", async (req, res) => {
     const update = req.body || {};
     if (update.callback_query && update.callback_query.data) {
       const data = String(update.callback_query.data);
-      await tg("answerCallbackQuery", { callback_query_id: update.callback_query.id, text: "So'rov qabul qilindi ✅" });
+      try { await tg("answerCallbackQuery", { callback_query_id: update.callback_query.id, text: "So'rov qabul qilindi ✅" }); } catch (_e) {}
       const mOrder = data.match(/^o:(\d+):(d|r)$/);
       const m2 = data.match(/^b2:([^:]+):(d|r)$/);
       const mLegacy = data.match(/^batch:(.+):(delivered|returned)$/);
