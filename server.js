@@ -226,8 +226,8 @@ async function getBatchSummary(batch) {
   const items = rows.map(x => `• ${x.book_title} — ${x.qty} dona — ${money(x.subtotal)}`).join("\n");
   const sourcePart = first.source_name ? `\n🏫 Manba: ${first.source_name}` : "";
   const locPart = first.location_url ? `\n📍 Lokatsiya: ${first.location_url}` : "";
-  const accountDisplay = String(first.customer_telegram_username || first.customer_telegram || "").trim();
-  const accountPart = accountDisplay ? `\n🆔 Zakaz beruvchi Telegram akkaunt: ${accountDisplay}` : "";
+  const accountDisplay = String(first.customer_telegram_username || first.customer_telegram || "").trim() || "Tasdiqlanmagan";
+  const accountPart = `\n🆔 Zakaz beruvchi Telegram akkaunt: ${accountDisplay}`;
   const total = rows.reduce((a, x) => a + Number(x.total_sum || 0), 0);
   const status = statusLabel(first.status);
   const receiptPart = first.status === "delivered" ? " | 🧾 Chek" : "";
