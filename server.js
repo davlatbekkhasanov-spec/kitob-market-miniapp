@@ -208,8 +208,8 @@ async function sendBatchToGroup(batch) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_GROUP_CHAT_ID) return null;
   const firstOrderId = Number(batch.rows?.[0]?.id || 0);
   const buttons = firstOrderId ? [[
-    { text: "✅ Yetkazildi", url: statusActionUrl(firstOrderId, "delivered") },
-    { text: "↩️ Vozvrat", url: statusActionUrl(firstOrderId, "returned") }
+    { text: "✅ Yetkazildi", callback_data: `o:${firstOrderId}:d` },
+    { text: "↩️ Vozvrat", callback_data: `o:${firstOrderId}:r` }
   ]] : [[
     { text: "✅ Yetkazildi", callback_data: `b2:${encodeBatchToken(batch.batch_id)}:d` },
     { text: "↩️ Vozvrat", callback_data: `b2:${encodeBatchToken(batch.batch_id)}:r` }
@@ -224,13 +224,14 @@ async function getBatchSummary(batch) {
   const items = rows.map(x => `• ${x.book_title} — ${x.qty} dona — ${money(x.subtotal)}`).join("\n");
   const sourcePart = first.source_name ? `\n🏫 Manba: ${first.source_name}` : "";
   const locPart = first.location_url ? `\n📍 Lokatsiya: ${first.location_url}` : "";
+  const accountPart = first.customer_telegram_username ? `\n🆔 Buyurtmachi akkaunt: ${first.customer_telegram_username}` : "";
   const total = rows.reduce((a, x) => a + Number(x.total_sum || 0), 0);
   const status = statusLabel(first.status);
-  const receiptPart = first.status === "delivered" && rows.some((x) => x.receipt_sent) ? " | 🧾 Chek yuborildi" : "";
+  const receiptPart = first.status === "delivered" ? " | 🧾 Chek" : "";
   return {
     batch_id: batch,
     rows,
-    text: `🛒 ${batch}\n${items}\n👤 Mijoz: ${first.customer_name || "-"}\n📞 Telefon: ${first.phone}\n🏠 Manzil: ${first.address_text || "-"}${locPart}${sourcePart}\n💵 Jami: ${money(total)}\n📌 Holat: ${status}${receiptPart}`
+    text: `🛒 ${batch}\n${items}\n👤 Mijoz: ${first.customer_name || "-"}\n📞 Telefon: ${first.phone}${accountPart}\n🏠 Manzil: ${first.address_text || "-"}${locPart}${sourcePart}\n💵 Jami: ${money(total)}\n📌 Holat: ${status}${receiptPart}`
   };
 }
 function page(title, body, opts = {}) {
@@ -302,6 +303,7 @@ async function initDb() {
   await q(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT ''`);
   await q(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS source_name TEXT DEFAULT ''`);
   await q(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS customer_telegram TEXT DEFAULT ''`);
+  await q(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS customer_telegram_username TEXT DEFAULT ''`);
   await q(`ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS receipt_sent BOOLEAN NOT NULL DEFAULT FALSE`);
   await q(`CREATE TABLE IF NOT EXISTS pending_feedback (chat_id TEXT PRIMARY KEY, order_id BIGINT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT NOW())`);
   await q(`CREATE TABLE IF NOT EXISTS telegram_bindings (token TEXT PRIMARY KEY, chat_id TEXT NOT NULL, username TEXT DEFAULT '', created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW())`);
@@ -342,8 +344,8 @@ async function updateGroupOrderMessage(batch) {
   if (!first) return;
   const firstOrderId = Number(summary.rows?.[0]?.id || 0);
   const keyboard = summary.rows[0].status === "new" ? { inline_keyboard: firstOrderId ? [[
-    { text: "✅ Yetkazildi", url: statusActionUrl(firstOrderId, "delivered") },
-    { text: "↩️ Vozvrat", url: statusActionUrl(firstOrderId, "returned") }
+    { text: "✅ Yetkazildi", callback_data: `o:${firstOrderId}:d` },
+    { text: "↩️ Vozvrat", callback_data: `o:${firstOrderId}:r` }
   ]] : [[
     { text: "✅ Yetkazildi", callback_data: `b2:${encodeBatchToken(summary.batch_id)}:d` },
     { text: "↩️ Vozvrat", callback_data: `b2:${encodeBatchToken(summary.batch_id)}:r` }
@@ -377,7 +379,10 @@ app.get("/telegram/status/:orderId/:status/:sig", async (req, res) => {
     const batch = String(r.rows[0]?.batch_id || "");
     if (!batch) return res.status(404).send("Topilmadi");
     await q(`UPDATE customer_orders SET status=$1 WHERE batch_id=$2`, [status, batch]);
-    if (status === "delivered") await sendReceiptNotifications(batch);
+    if (status === "delivered") {
+      await q(`UPDATE customer_orders SET receipt_sent=TRUE WHERE batch_id=$1`, [batch]);
+      await sendReceiptNotifications(batch);
+    }
     await updateGroupOrderMessage(batch);
     res.send(`<html><body style="font-family:Arial;padding:24px"><h2>✅ Holat yangilandi: ${esc(statusLabel(status))}</h2><p>Telegramga qaytishingiz mumkin.</p></body></html>`);
   } catch (_e) {
@@ -409,7 +414,10 @@ app.post("/telegram/webhook", async (req, res) => {
         }
         if (!batch) return res.json({ ok:true });
         await q(`UPDATE customer_orders SET status=$1 WHERE batch_id=$2`, [status, batch]);
-        if (status === "delivered") await sendReceiptNotifications(batch);
+        if (status === "delivered") {
+          await q(`UPDATE customer_orders SET receipt_sent=TRUE WHERE batch_id=$1`, [batch]);
+          await sendReceiptNotifications(batch);
+        }
         await updateGroupOrderMessage(batch);
       } else {
         const fb = data.match(/^feedback:(\d+)$/);
@@ -463,6 +471,11 @@ app.get("/", async (req, res, next) => { try {
   if (sourceCode) {
     const meta = sourceMeta(sourceCode);
     res.cookie("source_code", meta.code, { httpOnly: true, sameSite: "lax", secure: isSecureRequest(req), maxAge: 1000 * 60 * 60 * 24 * 30 });
+    const bindToken = ensureBindToken(req, res);
+    const verified = await q(`SELECT 1 FROM telegram_bindings WHERE token=$1 LIMIT 1`, [bindToken]);
+    if (!verified.rows.length && String(req.query.verified || "") !== "1") {
+      return res.redirect(`/verify?source=${encodeURIComponent(meta.code)}`);
+    }
   }
   cartSessionId(req, res);
   const search = String(req.query.search || "").trim();
@@ -495,6 +508,12 @@ app.get("/", async (req, res, next) => { try {
     </div>`).join("") || `<div class="panel">Qidiruv bo'yicha mahsulot topilmadi</div>`;
   res.send(page("Kitob Market", `<div class="hero"><h1>Kitoblar do'koni</h1><p>Sevimli kitoblaringizni tanlang — narxi va buyurtma qulay tarzda bir joyda</p>${sourceTag}<form class="searchbar" method="get" action="/" style="margin-top:12px" id="catalogFilterForm"><input type="hidden" name="source" value="${esc(sourceCode || req.cookies.source_code || "")}" /><input type="text" name="search" value="${esc(search)}" placeholder="Kitob nomi yoki muallif bo'yicha qidiring" /><select name="category_id" id="categorySelect"><option value="">Barcha kategoriya</option>${catOptions}</select><button type="submit">Poisk</button><a class="btn soft" href="/cart">Savatcha (${count})</a></form></div><h2 style="margin-top:18px">Mavjud kitoblar</h2><div class="cards">${cards}</div><script>(function(){const form=document.getElementById('catalogFilterForm');const category=document.getElementById('categorySelect');if(!form||!category)return;category.addEventListener('change',function(){form.submit();});})();</script>`, { admin:isAdmin(req) }));
 } catch (e) { next(e); } });
+app.get("/verify", async (req, res) => {
+  const source = String(req.query.source || req.cookies.source_code || "").trim();
+  const bindToken = ensureBindToken(req, res);
+  const verifyUrl = TELEGRAM_BOT_USERNAME ? `https://t.me/${TELEGRAM_BOT_USERNAME}?start=verify_${bindToken}` : "#";
+  res.send(page("Shaxsni tasdiqlash", `<div class="panel" style="max-width:740px;margin:0 auto"><h2>1-qadam: shaxsingizni tasdiqlang</h2><p>Avval Telegram orqali tasdiqlang, keyin avtomatik saytga qaytasiz.</p><div class="actions"><a class="btn green" target="_blank" href="${esc(verifyUrl)}">Shaxsingizni tasdiqlash</a><a class="btn soft" href="/?source=${esc(source)}&verified=1">Tasdiqlandi, saytga o'tish</a></div><script>setInterval(async()=>{try{const r=await fetch('/telegram/bind/status?token=${esc(bindToken)}');const j=await r.json();if(j&&j.verified){location.href='/?source=${esc(source)}&verified=1';}}catch(_e){}},2500);</script></div>`, { admin:isAdmin(req) }));
+});
 
 app.get("/order/:id", async (req, res, next) => { try {
   const r = await q(`SELECT * FROM books WHERE id=$1 AND active=TRUE AND stock_qty > 0`, [Number(req.params.id)]);
@@ -518,9 +537,10 @@ app.post("/order/:id", async (req, res, next) => { const client = await pool.con
   const meta = sourceMeta(req.body.source_code || req.cookies.source_code || "");
   const batch = await nextOrderBatchId(client);
   const bindToken = String(req.body.telegram_bind_token || req.signedCookies.tg_bind_token || "");
-  const bind = bindToken ? await client.query(`SELECT chat_id FROM telegram_bindings WHERE token=$1`, [bindToken]) : { rows: [] };
+  const bind = bindToken ? await client.query(`SELECT chat_id, username FROM telegram_bindings WHERE token=$1`, [bindToken]) : { rows: [] };
   const customerTelegram = String(bind.rows[0]?.chat_id || "");
-  const inserted=await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name, customer_telegram) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`, [id, qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, DELIVERY_FEE, subtotal, total, batch, meta.code, meta.type, meta.name, customerTelegram]);
+  const customerTelegramUsername = String(bind.rows[0]?.username || "");
+  const inserted=await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name, customer_telegram, customer_telegram_username) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`, [id, qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, DELIVERY_FEE, subtotal, total, batch, meta.code, meta.type, meta.name, customerTelegram, customerTelegramUsername]);
   await client.query(`UPDATE books SET stock_qty = stock_qty - $1, updated_at=NOW() WHERE id=$2`, [qty, id]);
   await client.query("COMMIT");
   const summary = await getBatchSummary(batch);
@@ -585,8 +605,9 @@ app.post("/checkout", async (req, res, next) => { const client = await pool.conn
   const batch = await nextOrderBatchId(client);
   const meta = sourceMeta(req.body.source_code || req.cookies.source_code || "");
   const bindToken = String(req.body.telegram_bind_token || req.signedCookies.tg_bind_token || "");
-  const bind = bindToken ? await client.query(`SELECT chat_id FROM telegram_bindings WHERE token=$1`, [bindToken]) : { rows: [] };
+  const bind = bindToken ? await client.query(`SELECT chat_id, username FROM telegram_bindings WHERE token=$1`, [bindToken]) : { rows: [] };
   const customerTelegram = String(bind.rows[0]?.chat_id || "");
+  const customerTelegramUsername = String(bind.rows[0]?.username || "");
   let total = 0;
   for (let i=0;i<items.rows.length;i++) {
     const item = items.rows[i];
@@ -597,8 +618,8 @@ app.post("/checkout", async (req, res, next) => { const client = await pool.conn
     const lineTotal = subtotal + delivery;
     total += lineTotal;
     const location = resolveLocation(req.body.latitude, req.body.longitude, req.body.location_url, req.body.address_text);
-    await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name, customer_telegram)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, [item.book_id, item.qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, delivery, subtotal, lineTotal, batch, meta.code, meta.type, meta.name, customerTelegram]);
+    await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name, customer_telegram, customer_telegram_username)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, [item.book_id, item.qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, delivery, subtotal, lineTotal, batch, meta.code, meta.type, meta.name, customerTelegram, customerTelegramUsername]);
     await client.query(`UPDATE books SET stock_qty = stock_qty - $1, updated_at=NOW() WHERE id=$2`, [item.qty, item.book_id]);
   }
   await client.query(`DELETE FROM cart_items WHERE session_id=$1`, [sid]);
