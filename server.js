@@ -226,7 +226,7 @@ async function getBatchSummary(batch) {
   const items = rows.map(x => `• ${x.book_title} — ${x.qty} dona — ${money(x.subtotal)}`).join("\n");
   const sourcePart = first.source_name ? `\n🏫 Manba: ${first.source_name}` : "";
   const locPart = first.location_url ? `\n📍 Lokatsiya: ${first.location_url}` : "";
-  const accountPart = first.customer_telegram_username ? `\n🆔 Buyurtmachi akkaunt: ${first.customer_telegram_username}` : "";
+  const accountPart = first.customer_telegram_username ? `\n🆔 Zakaz beruvchi Telegram akkaunt: ${first.customer_telegram_username}` : "";
   const total = rows.reduce((a, x) => a + Number(x.total_sum || 0), 0);
   const status = statusLabel(first.status);
   const receiptPart = first.status === "delivered" ? " | 🧾 Chek" : "";
@@ -481,7 +481,7 @@ app.get("/", async (req, res, next) => { try {
     res.cookie("source_code", meta.code, { httpOnly: true, sameSite: "lax", secure: isSecureRequest(req), maxAge: 1000 * 60 * 60 * 24 * 30 });
     const bindToken = ensureBindToken(req, res);
     const verified = await q(`SELECT 1 FROM telegram_bindings WHERE token=$1 LIMIT 1`, [bindToken]);
-    if (!verified.rows.length && String(req.query.verified || "") !== "1") {
+    if (!verified.rows.length) {
       return res.redirect(`/verify?source=${encodeURIComponent(meta.code)}`);
     }
   }
@@ -520,7 +520,7 @@ app.get("/verify", async (req, res) => {
   const source = String(req.query.source || req.cookies.source_code || "").trim();
   const bindToken = ensureBindToken(req, res);
   const verifyUrl = TELEGRAM_BOT_USERNAME ? `https://t.me/${TELEGRAM_BOT_USERNAME}?start=verify_${bindToken}` : "#";
-  res.send(page("Shaxsni tasdiqlash", `<div class="panel" style="max-width:740px;margin:0 auto"><h2>1-qadam: shaxsingizni tasdiqlang</h2><p>Avval Telegram orqali tasdiqlang, keyin avtomatik saytga qaytasiz.</p><div class="actions"><a class="btn green" target="_blank" href="${esc(verifyUrl)}">Shaxsingizni tasdiqlash</a><a class="btn soft" href="/?source=${esc(source)}&verified=1">Tasdiqlandi, saytga o'tish</a></div><script>setInterval(async()=>{try{const r=await fetch('/telegram/bind/status?token=${esc(bindToken)}');const j=await r.json();if(j&&j.verified){location.href='/?source=${esc(source)}&verified=1';}}catch(_e){}},2500);</script></div>`, { admin:isAdmin(req) }));
+  res.send(page("Shaxsni tasdiqlash", `<div class="panel" style="max-width:740px;margin:0 auto"><h2>Telegram akkauntni tasdiqlang</h2><p>QR kod orqali kirgan foydalanuvchi uchun Telegram tasdiqlash majburiy. Iltimos, pastdagi tugmani bosing.</p><div class="actions"><a class="btn green" target="_blank" href="${esc(verifyUrl)}">Telegram’da tasdiqlash</a></div><div class="small">Tasdiqlangandan keyin sayt avtomatik ochiladi.</div><script>setInterval(async()=>{try{const r=await fetch('/telegram/bind/status?token=${esc(bindToken)}');const j=await r.json();if(j&&j.verified){location.href='/?source=${esc(source)}';}}catch(_e){}},2500);</script></div>`, { admin:isAdmin(req) }));
 });
 
 app.get("/order/:id", async (req, res, next) => { try {
@@ -548,6 +548,7 @@ app.post("/order/:id", async (req, res, next) => { const client = await pool.con
   const bind = bindToken ? await client.query(`SELECT chat_id, username FROM telegram_bindings WHERE token=$1`, [bindToken]) : { rows: [] };
   const customerTelegram = String(bind.rows[0]?.chat_id || "");
   const customerTelegramUsername = String(bind.rows[0]?.username || "");
+  if (meta.code && !customerTelegram) throw new Error("QR orqali kirishda Telegram akkauntni avval tasdiqlang");
   const inserted=await client.query(`INSERT INTO customer_orders(book_id, qty, customer_name, phone, address_text, latitude, longitude, location_url, delivery_fee, subtotal, total_sum, batch_id, source_code, source_type, source_name, customer_telegram, customer_telegram_username) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`, [id, qty, String(req.body.customer_name||""), String(req.body.phone||""), String(req.body.address_text||""), location.lat, location.lng, location.locationUrl, DELIVERY_FEE, subtotal, total, batch, meta.code, meta.type, meta.name, customerTelegram, customerTelegramUsername]);
   await client.query(`UPDATE books SET stock_qty = stock_qty - $1, updated_at=NOW() WHERE id=$2`, [qty, id]);
   await client.query("COMMIT");
@@ -616,6 +617,7 @@ app.post("/checkout", async (req, res, next) => { const client = await pool.conn
   const bind = bindToken ? await client.query(`SELECT chat_id, username FROM telegram_bindings WHERE token=$1`, [bindToken]) : { rows: [] };
   const customerTelegram = String(bind.rows[0]?.chat_id || "");
   const customerTelegramUsername = String(bind.rows[0]?.username || "");
+  if (meta.code && !customerTelegram) throw new Error("QR orqali kirishda Telegram akkauntni avval tasdiqlang");
   let total = 0;
   for (let i=0;i<items.rows.length;i++) {
     const item = items.rows[i];
