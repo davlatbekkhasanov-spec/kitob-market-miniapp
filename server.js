@@ -96,6 +96,16 @@ function statusActionSig(orderId, status) {
 function statusActionUrl(orderId, status) {
   return `${APP_URL}/telegram/status/${orderId}/${status}/${statusActionSig(orderId, status)}`;
 }
+function statusKeyboard(firstOrderId) {
+  const orderId = Number(firstOrderId || 0);
+  if (!orderId) return undefined;
+  return {
+    inline_keyboard: [[
+      { text: "✅ Yetkazildi", url: statusActionUrl(orderId, "delivered") },
+      { text: "↩️ Vozvrat", url: statusActionUrl(orderId, "returned") }
+    ]]
+  };
+}
 
 function sourceMeta(code = "") {
   const value = String(code || "").trim();
@@ -207,14 +217,7 @@ function sourceBadge(sourceCode) {
 async function sendBatchToGroup(batch) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_GROUP_CHAT_ID) return null;
   const firstOrderId = Number(batch.rows?.[0]?.id || 0);
-  const buttons = firstOrderId ? [[
-    { text: "✅ Yetkazildi", callback_data: `o:${firstOrderId}:d` },
-    { text: "↩️ Vozvrat", callback_data: `o:${firstOrderId}:r` }
-  ]] : [[
-    { text: "✅ Yetkazildi", callback_data: `b2:${encodeBatchToken(batch.batch_id)}:d` },
-    { text: "↩️ Vozvrat", callback_data: `b2:${encodeBatchToken(batch.batch_id)}:r` }
-  ]];
-  return await tg("sendMessage", { chat_id: TELEGRAM_GROUP_CHAT_ID, text: batch.text, reply_markup: { inline_keyboard: buttons }, disable_web_page_preview: false });
+  return await tg("sendMessage", { chat_id: TELEGRAM_GROUP_CHAT_ID, text: batch.text, reply_markup: statusKeyboard(firstOrderId), disable_web_page_preview: false });
 }
 async function getBatchSummary(batch) {
   const r = await q(`SELECT o.*, b.title AS book_title FROM customer_orders o JOIN books b ON b.id=o.book_id WHERE o.batch_id=$1 ORDER BY o.id`, [batch]);
@@ -351,13 +354,7 @@ async function updateGroupOrderMessage(batch) {
   const first = summary.rows.find(x => x.telegram_message_id && x.telegram_chat_id);
   if (!first) return;
   const firstOrderId = Number(summary.rows?.[0]?.id || 0);
-  const keyboard = summary.rows[0].status === "new" ? { inline_keyboard: firstOrderId ? [[
-    { text: "✅ Yetkazildi", callback_data: `o:${firstOrderId}:d` },
-    { text: "↩️ Vozvrat", callback_data: `o:${firstOrderId}:r` }
-  ]] : [[
-    { text: "✅ Yetkazildi", callback_data: `b2:${encodeBatchToken(summary.batch_id)}:d` },
-    { text: "↩️ Vozvrat", callback_data: `b2:${encodeBatchToken(summary.batch_id)}:r` }
-  ]] } : undefined;
+  const keyboard = summary.rows[0].status === "new" ? statusKeyboard(firstOrderId) : undefined;
   await tg("editMessageText", { chat_id: first.telegram_chat_id, message_id: first.telegram_message_id, text: summary.text, reply_markup: keyboard, disable_web_page_preview: false });
 }
 async function sendReceiptNotifications(batch) {
