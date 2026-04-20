@@ -101,8 +101,8 @@ function statusKeyboard(firstOrderId) {
   if (!orderId) return undefined;
   return {
     inline_keyboard: [[
-      { text: "✅ Yetkazildi", url: statusActionUrl(orderId, "delivered") },
-      { text: "↩️ Vozvrat", url: statusActionUrl(orderId, "returned") }
+      { text: "✅ Yetkazildi", callback_data: `o:${orderId}:d` },
+      { text: "↩️ Vozvrat", callback_data: `o:${orderId}:r` }
     ]]
   };
 }
@@ -404,6 +404,12 @@ app.post("/telegram/webhook", async (req, res) => {
       const m2 = data.match(/^b2:([^:]+):(d|r)$/);
       const mLegacy = data.match(/^batch:(.+):(delivered|returned)$/);
       if (mOrder || m2 || mLegacy) {
+        const cbMessage = update.callback_query.message || {};
+        const cbChatId = cbMessage.chat && cbMessage.chat.id ? String(cbMessage.chat.id) : "";
+        const cbMessageId = Number(cbMessage.message_id || 0);
+        if (cbChatId && cbMessageId) {
+          await tg("editMessageReplyMarkup", { chat_id: cbChatId, message_id: cbMessageId, reply_markup: { inline_keyboard: [] } });
+        }
         let batch = "";
         let status = "";
         if (mOrder) {
