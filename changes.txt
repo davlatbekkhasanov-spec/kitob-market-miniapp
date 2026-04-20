@@ -1,0 +1,10 @@
+YANGILANGAN JOYLAR
+
+- buildTelegramAccountLink() qo'shildi
+- verifyTelegramInitData() qo'shildi
+- telegramAutoBindScript() qo'shildi
+- /telegram/webapp-auth endpoint qo'shildi
+- root sahifada majburiy /verify redirect yumshatildi
+- order/cart/home sahifalarda auto-bind script qo'shildi
+- Telegram group inline keyboard ichiga "Mijoz akkaunti" tugmasi qo'shildi
+- username bo'lmasa tg://user?id=... fallback link ishlatiladi
