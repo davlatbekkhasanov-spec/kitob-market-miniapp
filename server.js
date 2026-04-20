@@ -90,6 +90,12 @@ function encodeBatchToken(batchId = "") { return Buffer.from(String(batchId), "u
 function decodeBatchToken(token = "") {
   try { return Buffer.from(String(token), "base64url").toString("utf8"); } catch (_e) { return ""; }
 }
+function statusActionSig(orderId, status) {
+  return crypto.createHash("sha256").update(`${orderId}|${status}|${SESSION_SECRET}`).digest("hex").slice(0, 16);
+}
+function statusActionUrl(orderId, status) {
+  return `${APP_URL}/telegram/status/${orderId}/${status}/${statusActionSig(orderId, status)}`;
+}
 
 function sourceMeta(code = "") {
   const value = String(code || "").trim();
@@ -201,9 +207,12 @@ function sourceBadge(sourceCode) {
 async function sendBatchToGroup(batch) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_GROUP_CHAT_ID) return null;
   const firstOrderId = Number(batch.rows?.[0]?.id || 0);
-  const buttons = [[
-    { text: "✅ Yetkazildi", callback_data: firstOrderId ? `o:${firstOrderId}:d` : `b2:${encodeBatchToken(batch.batch_id)}:d` },
-    { text: "↩️ Vozvrat", callback_data: firstOrderId ? `o:${firstOrderId}:r` : `b2:${encodeBatchToken(batch.batch_id)}:r` }
+  const buttons = firstOrderId ? [[
+    { text: "✅ Yetkazildi", url: statusActionUrl(firstOrderId, "delivered") },
+    { text: "↩️ Vozvrat", url: statusActionUrl(firstOrderId, "returned") }
+  ]] : [[
+    { text: "✅ Yetkazildi", callback_data: `b2:${encodeBatchToken(batch.batch_id)}:d` },
+    { text: "↩️ Vozvrat", callback_data: `b2:${encodeBatchToken(batch.batch_id)}:r` }
   ]];
   return await tg("sendMessage", { chat_id: TELEGRAM_GROUP_CHAT_ID, text: batch.text, reply_markup: { inline_keyboard: buttons }, disable_web_page_preview: false });
 }
@@ -332,9 +341,12 @@ async function updateGroupOrderMessage(batch) {
   const first = summary.rows.find(x => x.telegram_message_id && x.telegram_chat_id);
   if (!first) return;
   const firstOrderId = Number(summary.rows?.[0]?.id || 0);
-  const keyboard = summary.rows[0].status === "new" ? { inline_keyboard: [[
-    { text: "✅ Yetkazildi", callback_data: firstOrderId ? `o:${firstOrderId}:d` : `b2:${encodeBatchToken(summary.batch_id)}:d` },
-    { text: "↩️ Vozvrat", callback_data: firstOrderId ? `o:${firstOrderId}:r` : `b2:${encodeBatchToken(summary.batch_id)}:r` }
+  const keyboard = summary.rows[0].status === "new" ? { inline_keyboard: firstOrderId ? [[
+    { text: "✅ Yetkazildi", url: statusActionUrl(firstOrderId, "delivered") },
+    { text: "↩️ Vozvrat", url: statusActionUrl(firstOrderId, "returned") }
+  ]] : [[
+    { text: "✅ Yetkazildi", callback_data: `b2:${encodeBatchToken(summary.batch_id)}:d` },
+    { text: "↩️ Vozvrat", callback_data: `b2:${encodeBatchToken(summary.batch_id)}:r` }
   ]] } : undefined;
   await tg("editMessageText", { chat_id: first.telegram_chat_id, message_id: first.telegram_message_id, text: summary.text, reply_markup: keyboard, disable_web_page_preview: false });
 }
@@ -354,6 +366,24 @@ async function sendReceiptNotifications(batch) {
     }
   }
 }
+app.get("/telegram/status/:orderId/:status/:sig", async (req, res) => {
+  try {
+    const orderId = Number(req.params.orderId);
+    const status = String(req.params.status || "");
+    const sig = String(req.params.sig || "");
+    if (!orderId || !["delivered", "returned"].includes(status)) return res.status(400).send("Noto'g'ri so'rov");
+    if (sig !== statusActionSig(orderId, status)) return res.status(403).send("Ruxsat yo'q");
+    const r = await q(`SELECT batch_id FROM customer_orders WHERE id=$1`, [orderId]);
+    const batch = String(r.rows[0]?.batch_id || "");
+    if (!batch) return res.status(404).send("Topilmadi");
+    await q(`UPDATE customer_orders SET status=$1 WHERE batch_id=$2`, [status, batch]);
+    if (status === "delivered") await sendReceiptNotifications(batch);
+    await updateGroupOrderMessage(batch);
+    res.send(`<html><body style="font-family:Arial;padding:24px"><h2>✅ Holat yangilandi: ${esc(statusLabel(status))}</h2><p>Telegramga qaytishingiz mumkin.</p></body></html>`);
+  } catch (_e) {
+    res.status(500).send("Xatolik");
+  }
+});
 app.post("/telegram/webhook", async (req, res) => {
   try {
     const update = req.body || {};
