@@ -1,0 +1,17 @@
+Asosiy o'zgarishlar:
+1. QR tracking:
+   - sourceMeta endi object_1..object_30 formatini ishlatadi
+   - source_refs initDb da 30 ta Obekt yozuvini yaratadi
+2. Bot start oqimi:
+   - /start object_N kelganda bot Mini App ochish tugmasini yuboradi
+3. Mijozga auto xabar:
+   - Buyurtma berilgandan keyin bot private ga qabul xabari yuboradi
+4. Admin hisobotlari:
+   - /admin/reports da QR obyektlar analytics
+   - /admin/sources da umumiy jadval
+   - /admin/sources/:code da batafsil hisobot
+5. UX tozalandi:
+   - Zakaz/savatcha sahifalaridagi ortiqcha tasdiqlash tugmalari olib tashlandi
+6. Akkount tugmasi:
+   - Faqat username bo'lsa chiqadi
+   - Username bo'lmasa ID matn ko'rinishida chiqadi
