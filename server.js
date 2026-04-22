@@ -205,9 +205,9 @@ function roundDistanceKm(value) {
 }
 function calculateDelivery(distanceKm) {
   const km = Number(distanceKm || 0);
-  const baseDistance = 3;
-  const basePrice = 14500;
-  const perKm = 2500;
+  const baseDistance = 5;
+  const basePrice = 18000;
+  const perKm = 3000;
   if (km <= baseDistance) return basePrice;
   return Math.round(basePrice + ((km - baseDistance) * perKm));
 }
