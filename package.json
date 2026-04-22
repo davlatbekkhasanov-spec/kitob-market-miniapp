@@ -2,10 +2,10 @@
   "name": "kitob-market-miniapp",
   "version": "1.0.0",
   "private": true,
-  "main": "server.js",
+  "main": "src/server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "start": "node src/server.js",
+    "dev": "node src/server.js"
   },
   "dependencies": {
     "cloudinary": "^2.5.1",
