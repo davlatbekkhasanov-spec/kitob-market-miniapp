@@ -569,7 +569,7 @@ Rahmat 🙏`
 }
 
 
-app.post("/delivery/calc", validate((body) => null), async (req, res) => {
+app.post("/delivery/calc", validate((body) => { const hasCoords = String(body.latitude || "").trim() && String(body.longitude || "").trim(); const hasText = String(body.location_url || "").trim() || String(body.address_text || "").trim(); return (hasCoords || hasText) ? null : "Lokatsiya yoki manzil kiriting"; }), async (req, res) => {
   try {
     const location = resolveLocation(req.body.latitude, req.body.longitude, req.body.location_url, req.body.address_text);
     if (!location.lat || !location.lng) return res.status(400).json({ ok: false, message: "Lokatsiya topilmadi" });
@@ -581,7 +581,7 @@ app.post("/delivery/calc", validate((body) => null), async (req, res) => {
 });
 
 
-const telegramService = createTelegramService({ q, tg, decodeBatchToken, sourceMeta, openWebAppButton, normalizeTelegramTarget, statusLabel, updateGroupOrderMessage, sendReceiptNotifications, verifyTelegramInitData, ensureBindToken, TELEGRAM_GROUP_CHAT_ID });
+const telegramService = createTelegramService({ tg, decodeBatchToken, sourceMeta, openWebAppButton, normalizeTelegramTarget, statusLabel, updateGroupOrderMessage, sendReceiptNotifications, verifyTelegramInitData, ensureBindToken, TELEGRAM_GROUP_CHAT_ID });
 const telegramController = createTelegramController(telegramService, { statusActionSig });
 app.use("/telegram", createTelegramRouter(telegramController));
 app.use("/api", apiRouter);
