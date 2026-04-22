@@ -1,2 +1,5 @@
-const express = require('express');
-module.exports = express.Router();
+function registerWebRoutes(app, controller) {
+  controller.register(app);
+}
+
+module.exports = { registerWebRoutes };
