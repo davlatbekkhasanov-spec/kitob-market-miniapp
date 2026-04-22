@@ -1,6 +1,10 @@
-function requireAdmin(req, res, next) {
-  if (!req.signedCookies || !req.signedCookies.admin) return res.redirect('/admin/login');
-  return next();
+const { isAdmin } = require('../utils/security');
+
+function requireAdminFactory({ adminPin, sessionSecret }) {
+  return (req, res, next) => {
+    if (!isAdmin(req, adminPin, sessionSecret)) return res.redirect('/admin/login');
+    return next();
+  };
 }
 
-module.exports = { requireAdmin };
+module.exports = { requireAdminFactory };

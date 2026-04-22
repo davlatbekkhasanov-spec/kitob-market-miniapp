@@ -1,9 +1,9 @@
 const { Pool } = require('pg');
-const { DATABASE_URL } = require('./env');
 
+const connectionString = process.env.DATABASE_URL;
 const pool = new Pool({
-  connectionString: DATABASE_URL,
-  ssl: DATABASE_URL && DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false },
+  connectionString,
+  ssl: connectionString && connectionString.includes('localhost') ? false : { rejectUnauthorized: false },
 });
 
 function q(text, params = []) {

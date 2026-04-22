@@ -2,12 +2,18 @@ const express = require("express");
 const cookieParser = require("cookie-parser");
 const multer = require("multer");
 const PDFDocument = require("pdfkit");
-const { Pool } = require("pg");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { v2: cloudinary } = require("cloudinary");
 const { basicRateLimit } = require("./middlewares/rateLimit");
+const { validate } = require("./middlewares/validate");
+const { createTelegramService } = require("./services/telegramService");
+const { createTelegramController } = require("./controllers/telegramController");
+const { createTelegramRouter } = require("./routes/telegram");
+const apiRouter = require("./routes/api");
+const { pool, q } = require("./config/db");
+const { isSecureRequest: utilIsSecureRequest, secureCookieOptions, signedAdminValue: makeSignedAdminValue, isAdmin: checkAdmin } = require("./utils/security");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -35,10 +41,6 @@ if (HAS_CLOUDINARY) {
 }
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 app.set("trust proxy", 1);
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes("localhost") ? false : { rejectUnauthorized: false },
-});
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024 },
@@ -54,7 +56,6 @@ app.use(cookieParser(SESSION_SECRET));
 app.use(basicRateLimit());
 app.use("/uploads", express.static(UPLOAD_DIR));
 
-function q(text, params = []) { return pool.query(text, params); }
 function esc(value = "") { return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;"); }
 function money(v) { return Number(v || 0).toLocaleString("ru-RU") + " so'm"; }
 function dateUz(v) {
@@ -73,15 +74,15 @@ function pickPdfFontPath(name) {
   ];
   return candidates.find((p) => fs.existsSync(p)) || "";
 }
-function signedAdminValue() { return crypto.createHash("sha256").update(`${ADMIN_PIN}|${SESSION_SECRET}`).digest("hex"); }
-function isAdmin(req) { return req.signedCookies.admin === signedAdminValue(); }
+function signedAdminValue() { return makeSignedAdminValue(ADMIN_PIN, SESSION_SECRET); }
+function isAdmin(req) { return checkAdmin(req, ADMIN_PIN, SESSION_SECRET); }
 function requireAdmin(req, res, next) { if (!isAdmin(req)) return res.redirect("/admin/login"); next(); }
-function isSecureRequest(req) { return req.secure || req.headers["x-forwarded-proto"] === "https"; }
+function isSecureRequest(req) { return utilIsSecureRequest(req); }
 function ensureBindToken(req, res) {
   const existing = String(req.signedCookies.tg_bind_token || "").trim();
   if (existing) return existing;
   const token = crypto.randomBytes(12).toString("hex");
-  res.cookie("tg_bind_token", token, { httpOnly: true, signed: true, sameSite: "lax", secure: isSecureRequest(req), maxAge: 1000 * 60 * 60 * 24 * 30 });
+  res.cookie("tg_bind_token", token, { signed: true, ...secureCookieOptions(req, 1000 * 60 * 60 * 24 * 30) });
   return token;
 }
 function statusLabel(status) { return ({ new: "Yangi", in_progress: "Jarayonda", delivered: "Yetkazildi", returned: "Vozvrat" })[String(status||"")] || String(status||""); }
@@ -274,7 +275,7 @@ function cartSessionId(req, res) {
   let sid = String(req.signedCookies.cart_sid || "");
   if (!sid) {
     sid = crypto.randomBytes(16).toString("hex");
-    res.cookie("cart_sid", sid, { signed: true, httpOnly: true, sameSite: "lax", secure: isSecureRequest(req), maxAge: 1000 * 60 * 60 * 24 * 30 });
+    res.cookie("cart_sid", sid, { signed: true, ...secureCookieOptions(req, 1000 * 60 * 60 * 24 * 30) });
   }
   return sid;
 }
@@ -568,7 +569,7 @@ Rahmat 🙏`
 }
 
 
-app.post("/delivery/calc", async (req, res) => {
+app.post("/delivery/calc", validate((body) => null), async (req, res) => {
   try {
     const location = resolveLocation(req.body.latitude, req.body.longitude, req.body.location_url, req.body.address_text);
     if (!location.lat || !location.lng) return res.status(400).json({ ok: false, message: "Lokatsiya topilmadi" });
@@ -579,147 +580,17 @@ app.post("/delivery/calc", async (req, res) => {
   }
 });
 
-app.get("/telegram/status/:orderId/:status/:sig", async (req, res) => {
-  try {
-    const orderId = Number(req.params.orderId);
-    const status = String(req.params.status || "");
-    const sig = String(req.params.sig || "");
-    if (!orderId || !["delivered", "returned"].includes(status)) return res.status(400).send("Noto'g'ri so'rov");
-    if (sig !== statusActionSig(orderId, status)) return res.status(403).send("Ruxsat yo'q");
-    const r = await q(`SELECT batch_id FROM customer_orders WHERE id=$1`, [orderId]);
-    const batch = String(r.rows[0]?.batch_id || "");
-    if (!batch) return res.status(404).send("Topilmadi");
-    await q(`UPDATE customer_orders SET status=$1 WHERE batch_id=$2`, [status, batch]);
-    if (status === "delivered") {
-      await q(`UPDATE customer_orders SET receipt_sent=TRUE WHERE batch_id=$1`, [batch]);
-      await sendReceiptNotifications(batch);
-    }
-    await updateGroupOrderMessage(batch);
-    res.send(`<html><body style="font-family:Arial;padding:24px"><h2>✅ Holat yangilandi: ${esc(statusLabel(status))}</h2><p>Telegramga qaytishingiz mumkin.</p></body></html>`);
-  } catch (_e) {
-    res.status(500).send("Xatolik");
-  }
-});
-app.post("/telegram/webhook", async (req, res) => {
-  try {
-    const update = req.body || {};
-    if (update.callback_query && update.callback_query.data) {
-      const data = String(update.callback_query.data);
-      try { await tg("answerCallbackQuery", { callback_query_id: update.callback_query.id, text: "So'rov qabul qilindi ✅" }); } catch (_e) {}
-      const mOrder = data.match(/^o:(\d+):(d|r)$/);
-      const m2 = data.match(/^b2:([^:]+):(d|r)$/);
-      const mLegacy = data.match(/^batch:(.+):(delivered|returned)$/);
-      const mPay = data.match(/^pay:(\d+):(cash|online)$/);
-      if (mOrder || m2 || mLegacy || mPay) {
-        let batch = "";
-        let status = "";
-        if (mPay) {
-          const orderId = Number(mPay[1]);
-          const payKind = mPay[2];
-          const row = await q(`SELECT batch_id FROM customer_orders WHERE id=$1`, [orderId]);
-          batch = String(row.rows[0]?.batch_id || "");
-          if (!batch) return res.json({ ok:true });
-          await q(`UPDATE customer_orders SET payment_status=$1 WHERE batch_id=$2`, [payKind === "online" ? "paid" : "confirmed", batch]);
-          await updateGroupOrderMessage(batch);
-        } else {
-          if (mOrder) {
-            status = mOrder[2] === "d" ? "delivered" : "returned";
-            const row = await q(`SELECT batch_id FROM customer_orders WHERE id=$1`, [Number(mOrder[1])]);
-            batch = String(row.rows[0]?.batch_id || "");
-          } else if (m2) {
-            batch = decodeBatchToken(m2[1]);
-            status = m2[2] === "d" ? "delivered" : "returned";
-          } else {
-            batch = mLegacy[1];
-            status = mLegacy[2];
-          }
-          if (!batch) return res.json({ ok:true });
-          await q(`UPDATE customer_orders SET status=$1 WHERE batch_id=$2`, [status, batch]);
-          if (status === "delivered") {
-            await q(`UPDATE customer_orders SET receipt_sent=TRUE WHERE batch_id=$1`, [batch]);
-            await sendReceiptNotifications(batch);
-          }
-          await updateGroupOrderMessage(batch);
-        }
-      } else {
-        const fb = data.match(/^feedback:(\d+)$/);
-        if (fb) {
-          const orderId = Number(fb[1]);
-          const chatId = String(update.callback_query.from?.id || "");
-          if (chatId) {
-            const orderRow = await q(`SELECT batch_id FROM customer_orders WHERE id=$1`, [orderId]);
-            const batchId = String(orderRow.rows[0]?.batch_id || '').trim();
-            await q(`INSERT INTO pending_feedback(chat_id, order_id, batch_id) VALUES ($1,$2,$3) ON CONFLICT (chat_id) DO UPDATE SET order_id=EXCLUDED.order_id, batch_id=EXCLUDED.batch_id, created_at=NOW()`, [chatId, orderId, batchId]);
-            await tg("sendMessage", { chat_id: chatId, text: "Iltimos, taklif yoki shikoyatingizni bitta xabar qilib yozing. Biz uni guruhga yuboramiz." });
-          }
-        }
-      }
-    }
-    if (update.message && update.message.text && update.message.chat && update.message.chat.type === "private") {
-      const chatId = String(update.message.chat.id);
-      const txt = String(update.message.text || "").trim();
-      const username = String(update.message.from?.username ? `@${update.message.from.username}` : "");
-      const startVerifyMatch = txt.match(/^\/start\s+verify_([a-f0-9]{24})$/i);
-      const startSourceMatch = txt.match(/^\/start\s+([A-Za-z0-9_-]{1,64})$/i);
-      if (startVerifyMatch) {
-        const token = startVerifyMatch[1];
-        await q(`INSERT INTO telegram_bindings(token, chat_id, username) VALUES ($1,$2,$3)
-                 ON CONFLICT (token) DO UPDATE SET chat_id=EXCLUDED.chat_id, username=EXCLUDED.username, updated_at=NOW()`,
-        [token, chatId, username]);
-        await tg("sendMessage", { chat_id: chatId, text: "✅ Shaxsingiz tasdiqlandi. Endi buyurtma berishingiz mumkin." });
-      } else if (txt === "/start" || startSourceMatch) {
-        const rawSource = startSourceMatch ? startSourceMatch[1] : "";
-        const meta = sourceMeta(rawSource);
-        const caption = "Assalomu alaykum! Pastdagi tugma orqali kirib buyurtma bering.";
-        await tg("sendMessage", { chat_id: chatId, text: caption, reply_markup: { inline_keyboard: [[openWebAppButton(meta.code)]] } });
-      }
-      const pending = await q(`SELECT order_id, batch_id FROM pending_feedback WHERE chat_id=$1`, [chatId]);
-      if (pending.rows.length) {
-        const orderId = pending.rows[0].order_id;
-        const batchLabel = String(pending.rows[0].batch_id || '').trim() || `Zakaz #${orderId}`;
-        const text = txt;
-        if (text) {
-          await tg("sendMessage", { chat_id: TELEGRAM_GROUP_CHAT_ID, text: `💬 Mijoz fikri (${batchLabel}):\n${text}` });
-        }
-        await q(`DELETE FROM pending_feedback WHERE chat_id=$1`, [chatId]);
-        await tg("sendMessage", { chat_id: chatId, text: "Rahmat! Fikringiz qabul qilindi ✅" });
-      }
-    }
-    res.json({ ok:true });
-  } catch (e) { console.error(e); res.json({ ok:true }); }
-});
-app.get("/telegram/bind/status", async (req, res) => {
-  try {
-    const token = String(req.query.token || req.signedCookies.tg_bind_token || "").trim();
-    if (!token) return res.json({ ok: true, verified: false });
-    const r = await q(`SELECT chat_id FROM telegram_bindings WHERE token=$1`, [token]);
-    return res.json({ ok: true, verified: Boolean(r.rows.length), chat_id: String(r.rows[0]?.chat_id || "") });
-  } catch (_e) {
-    return res.json({ ok: true, verified: false });
-  }
-});
-app.post("/telegram/webapp-auth", async (req, res) => {
-  try {
-    const token = String(req.body.bindToken || req.signedCookies.tg_bind_token || "").trim() || ensureBindToken(req, res);
-    const initData = String(req.body.initData || "").trim();
-    const telegramId = String(req.body.id || "").trim();
-    const username = String(req.body.username || "").trim();
-    if (!token || !telegramId) return res.status(400).json({ ok: false, message: "Ma'lumot yetarli emas" });
-    if (initData && !verifyTelegramInitData(initData)) return res.status(403).json({ ok: false, message: "Telegram ma'lumotlari tasdiqlanmadi" });
-    await q(`INSERT INTO telegram_bindings(token, chat_id, username)
-             VALUES ($1,$2,$3)
-             ON CONFLICT (token) DO UPDATE SET chat_id=EXCLUDED.chat_id, username=EXCLUDED.username, updated_at=NOW()`,
-      [token, telegramId, username]);
-    return res.json({ ok: true, verified: true, chat_id: telegramId, username });
-  } catch (e) {
-    return res.status(500).json({ ok: false, message: e.message || "Xatolik" });
-  }
-});
+
+const telegramService = createTelegramService({ q, tg, decodeBatchToken, sourceMeta, openWebAppButton, normalizeTelegramTarget, statusLabel, updateGroupOrderMessage, sendReceiptNotifications, verifyTelegramInitData, ensureBindToken, TELEGRAM_GROUP_CHAT_ID });
+const telegramController = createTelegramController(telegramService, { statusActionSig });
+app.use("/telegram", createTelegramRouter(telegramController));
+app.use("/api", apiRouter);
+
 app.get("/", async (req, res, next) => { try {
   const sourceCode = getSourceCode(req);
   if (sourceCode) {
     const meta = sourceMeta(sourceCode);
-    res.cookie("source_code", meta.code, { httpOnly: true, sameSite: "lax", secure: isSecureRequest(req), maxAge: 1000 * 60 * 60 * 24 * 30 });
+    res.cookie("source_code", meta.code, secureCookieOptions(req, 1000 * 60 * 60 * 24 * 30));
   }
   const bindToken = ensureBindToken(req, res);
   cartSessionId(req, res);
@@ -801,7 +672,7 @@ updateTotal();
 </script>`, { admin:isAdmin(req) }));
 } catch (e) { next(e); } });
 
-app.post("/order/:id", upload.single("payment_proof"), async (req, res, next) => { const client = await pool.connect(); try {
+app.post("/order/:id", upload.single("payment_proof"), validate((body) => { if (Number(body.qty || 0) < 1) return "Soni 1 dan katta bo'lishi kerak"; if (String(body.phone || "").trim().length < 3) return "Telefon raqam kiriting"; return null; }), async (req, res, next) => { const client = await pool.connect(); try {
   const id=Number(req.params.id);
   const qty=Math.max(1, Number(req.body.qty||1));
   const paymentType = normalizePaymentType(req.body.payment_type);
@@ -885,7 +756,7 @@ cartAddressText.addEventListener('change',recalcCartDelivery); updateCartTotal()
 </script>` : ""}</div>`, { admin:isAdmin(req) }));
 } catch (e) { next(e); } });
 
-app.post("/cart/update/:id", async (req, res, next) => { try {
+app.post("/cart/update/:id", validate((body) => Number(body.qty || 0) >= 1 ? null : "Soni 1 dan katta bo'lishi kerak"), async (req, res, next) => { try {
   const sid = cartSessionId(req, res);
   const bookId = Number(req.params.id);
   const requestedQty = Math.max(1, Number(req.body.qty || 1));
@@ -905,7 +776,7 @@ app.post("/cart/remove/:id", async (req, res, next) => { try {
   res.redirect("/cart");
 } catch (e) { next(e); } });
 
-app.post("/checkout", upload.single("payment_proof"), async (req, res, next) => { const client = await pool.connect(); try {
+app.post("/checkout", upload.single("payment_proof"), validate((body) => String(body.phone || "").trim().length >= 3 ? null : "Telefon raqam kiriting"), async (req, res, next) => { const client = await pool.connect(); try {
   const sid = String(req.signedCookies.cart_sid || ""); if (!sid) throw new Error("Savatcha topilmadi");
   const items = await client.query(`SELECT c.book_id, c.qty, b.title, b.sale_price, b.stock_qty FROM cart_items c JOIN books b ON b.id=c.book_id WHERE c.session_id=$1 AND b.active=TRUE ORDER BY c.id`, [sid]);
   if (!items.rows.length) throw new Error("Savatcha bo'sh");
@@ -953,13 +824,13 @@ app.post("/checkout", upload.single("payment_proof"), async (req, res, next) => 
 
 
 app.get("/admin/login", (req, res) => res.send(page("Admin login", `<div class="panel" style="max-width:520px;margin:0 auto"><h2>Admin kirish</h2><form class="form" method="post" action="/admin/login"><input type="password" name="pin" placeholder="PIN" required /><button type="submit">Kirish</button></form></div>`)));
-app.post("/admin/login", (req, res) => { if (String(req.body.pin||"") !== ADMIN_PIN) return res.send(page("Admin login", `<div class="panel" style="max-width:520px;margin:0 auto"><div class="alert err">PIN noto'g'ri</div><a class="btn" href="/admin/login">Qayta urinish</a></div>`)); res.cookie("admin", signedAdminValue(), { signed:true, httpOnly:true, sameSite:"lax", secure:isSecureRequest(req), maxAge:1000*60*60*12 }); res.redirect("/admin"); });
+app.post("/admin/login", (req, res) => { if (String(req.body.pin||"") !== ADMIN_PIN) return res.send(page("Admin login", `<div class="panel" style="max-width:520px;margin:0 auto"><div class="alert err">PIN noto'g'ri</div><a class="btn" href="/admin/login">Qayta urinish</a></div>`)); res.cookie("admin", signedAdminValue(), { signed:true, ...secureCookieOptions(req, 1000*60*60*12) }); res.redirect("/admin"); });
 app.get("/admin/logout", (_req, res) => { res.clearCookie("admin"); res.redirect("/"); });
 app.get("/admin", requireAdmin, async (_req, res, next) => { try { const stats=await q(`SELECT (SELECT COUNT(*) FROM books) AS books_count,(SELECT COUNT(*) FROM counterparties) AS counterparties_count,(SELECT COUNT(*) FROM purchases) AS purchases_count,(SELECT COUNT(*) FROM customer_orders) AS orders_count,(SELECT COALESCE(SUM(total_sum),0) FROM purchases) AS purchases_sum,(SELECT COALESCE(SUM(total_sum),0) FROM customer_orders) AS orders_sum`); const s=stats.rows[0]; res.send(page("Admin", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin/books">Kitoblar</a><a class="btn dark" href="/admin/counterparties">Kontragentlar</a><a class="btn dark" href="/admin/purchases/new">Prihod qilish</a><a class="btn dark" href="/admin/purchases">Prihodlar</a><a class="btn dark" href="/admin/orders">Zakazlar</a><a class="btn dark" href="/admin/categories">Kategoriyalar</a><a class="btn dark" href="/admin/sources">QR manbalar</a><a class="btn dark" href="/admin/reports">Hisobot</a><a class="btn red" href="/admin/logout">Chiqish</a></div><h2 style="margin-top:14px">Boshqaruv paneli</h2><div class="stat-grid"><div class="stat"><div class="muted">Kitoblar</div><div class="n">${s.books_count}</div></div><div class="stat"><div class="muted">Kontragentlar</div><div class="n">${s.counterparties_count}</div></div><div class="stat"><div class="muted">Prihodlar</div><div class="n">${s.purchases_count}</div></div><div class="stat"><div class="muted">Zakazlar</div><div class="n">${s.orders_count}</div></div><div class="stat"><div class="muted">Jami prihod</div><div class="n">${money(s.purchases_sum)}</div></div><div class="stat"><div class="muted">Jami zakaz</div><div class="n">${money(s.orders_sum)}</div></div></div></div>`, { admin:true })); } catch(e){ next(e);} });
 app.get("/admin/books", requireAdmin, async (_req,res,next)=>{ try { const r=await q(`SELECT b.*, c.name AS category_name FROM books b LEFT JOIN categories c ON c.id=b.category_id ORDER BY b.id DESC`); const rows=r.rows.map((b)=>`<tr><td>${b.id}</td><td>${esc(b.title)}</td><td>${esc(b.category_name || '-')}</td><td>${money(b.purchase_price)}</td><td>${b.markup_percent}%</td><td>${money(b.sale_price)}</td><td>${b.stock_qty}</td></tr>`).join(""); res.send(page("Kitoblar", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin">← Admin</a></div><h2>Kitoblar</h2><table><tr><th>ID</th><th>Nomi</th><th>Kategoriya</th><th>Olingan narx</th><th>Pereocenka</th><th>Sotuv narxi</th><th>Qoldiq</th></tr>${rows || `<tr><td colspan="7">Ma'lumot yo'q</td></tr>`}</table></div>`, { admin:true })); } catch(e){ next(e);} });
 app.get("/admin/counterparties", requireAdmin, async (_req,res,next)=>{ try { const r=await q(`SELECT * FROM counterparties ORDER BY id DESC`); const rows=r.rows.map((c)=>`<tr><td>${c.id}</td><td>${esc(c.name)}</td><td>${esc(c.phone)}</td><td>${esc(c.note)}</td></tr>`).join(""); res.send(page("Kontragentlar", `<div class="panel"><div class="nav"><a class="btn" href="/admin/counterparties/new">+ Yangi kontragent</a><a class="btn dark" href="/admin">← Admin</a></div><h2>Kontragentlar</h2><table><tr><th>ID</th><th>Nomi</th><th>Telefon</th><th>Izoh</th></tr>${rows || `<tr><td colspan="4">Kontragent yo'q</td></tr>`}</table></div>`, { admin:true })); } catch(e){ next(e);} });
 app.get("/admin/counterparties/new", requireAdmin, (_req,res)=> res.send(page("Yangi kontragent", `<div class="panel" style="max-width:760px;margin:0 auto"><h2>Yangi kontragent</h2><form class="form" method="post" action="/admin/counterparties/new"><input name="name" placeholder="Kontragent nomi" required /><input name="phone" placeholder="Telefon" /><textarea name="note" placeholder="Izoh"></textarea><button class="btn green" type="submit">Saqlash</button></form></div>`, { admin:true })));
-app.post("/admin/counterparties/new", requireAdmin, async (req,res,next)=>{ try { await q(`INSERT INTO counterparties(name, phone, note) VALUES ($1,$2,$3)`, [String(req.body.name||""), String(req.body.phone||""), String(req.body.note||"")]); res.redirect("/admin/counterparties"); } catch(e){ next(e);} });
+app.post("/admin/counterparties/new", requireAdmin, validate((body) => String(body.name || "").trim() ? null : "Kontragent nomi majburiy"), async (req,res,next)=>{ try { await q(`INSERT INTO counterparties(name, phone, note) VALUES ($1,$2,$3)`, [String(req.body.name||""), String(req.body.phone||""), String(req.body.note||"")]); res.redirect("/admin/counterparties"); } catch(e){ next(e);} });
 app.get("/admin/purchases/new", requireAdmin, async (_req,res,next)=>{ try {
   const cps=(await q(`SELECT id,name FROM counterparties ORDER BY name`)).rows;
   const books=(await q(`SELECT id,title FROM books ORDER BY title`)).rows;
@@ -969,7 +840,7 @@ app.get("/admin/purchases/new", requireAdmin, async (_req,res,next)=>{ try {
   const catOptions=categories.map((c)=>`<option value="${c.id}">${esc(c.name)}</option>`).join("");
   res.send(page("Prihod qilish", `<div class="panel" style="max-width:900px;margin:0 auto"><div class="nav"><a class="btn dark" href="/admin">← Admin</a><a class="btn soft" href="/admin/counterparties/new">Avval kontragent qo'shish</a><a class="btn soft" href="/admin/categories">Kategoriyalar</a></div><h2>Prihod qilish</h2><form class="form" method="post" action="/admin/purchases/new" enctype="multipart/form-data"><div class="grid2"><select name="counterparty_id" required><option value="">Kontragent tanlang</option>${cpOptions}</select><input type="date" name="doc_date" value="${new Date().toISOString().slice(0,10)}" required /></div><div class="grid2"><select name="category_id"><option value="">Kategoriya tanlang</option>${catOptions}</select><select name="existing_book_id"><option value="">Mavjud mahsulotni tanlang (ixtiyoriy)</option>${bookOptions}</select></div><div class="grid2"><input name="title" placeholder="Yoki yangi mahsulot nomi" /><input name="author" placeholder="Muallif / Tavsif" /></div><div class="grid2"><input type="file" name="image" accept="image/*" /><input type="number" name="qty" min="1" placeholder="Nechta olingan" required /></div><div class="grid2"><input type="number" name="purchase_price" min="0" placeholder="Nech pulga olingan (1 dona)" id="purchasePriceInput" required /><input type="number" name="sale_price" min="0" placeholder="Nech pulga sotiladi (1 dona)" id="salePriceInput" /></div><div class="grid2"><input type="number" step="0.01" name="markup_percent" min="0" placeholder="Pereocenka foizi (avto hisoblanadi)" id="markupPercentInput" /><div class="small">Sotuv narxini yozsangiz foiz avtomatik hisoblanadi.</div></div><textarea name="note" placeholder="Izoh"></textarea><button type="submit" class="btn green">Saqlash</button></form></div><script>const purchaseInput=document.getElementById('purchasePriceInput');const saleInput=document.getElementById('salePriceInput');const markupInput=document.getElementById('markupPercentInput');let lock=false;function f(v){return Number(v||0);}function calcMarkup(){if(lock)return; const p=f(purchaseInput&&purchaseInput.value); const s=f(saleInput&&saleInput.value); if(!p||!s||!markupInput)return; lock=true; markupInput.value=((s/p-1)*100).toFixed(2); lock=false;}function calcSale(){if(lock)return; const p=f(purchaseInput&&purchaseInput.value); const m=f(markupInput&&markupInput.value); if(!p||!markupInput||!saleInput)return; lock=true; saleInput.value=Math.round(p*(1+m/100)); lock=false;}if(saleInput){saleInput.addEventListener('input',calcMarkup);}if(purchaseInput){purchaseInput.addEventListener('input',()=>{if(saleInput&&saleInput.value){calcMarkup();}else{calcSale();}});}if(markupInput){markupInput.addEventListener('input',calcSale);}</script>`, { admin:true }));
 } catch(e){ next(e);} });
-app.post("/admin/purchases/new", requireAdmin, upload.single("image"), async (req,res,next)=>{ const client=await pool.connect(); try {
+app.post("/admin/purchases/new", requireAdmin, upload.single("image"), validate((body) => { if (Number(body.qty || 0) < 1) return "Soni noto'g'ri"; if (Number(body.purchase_price || 0) < 0) return "Olingan narx noto'g'ri"; return null; }), async (req,res,next)=>{ const client=await pool.connect(); try {
   const qty=Number(req.body.qty||0);
   const purchasePrice=Number(req.body.purchase_price||0);
   const requestedSalePrice=Number(req.body.sale_price||0);
@@ -1164,7 +1035,7 @@ app.get("/admin/categories", requireAdmin, async (_req,res,next)=>{ try {
   res.send(page("Kategoriyalar", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin">← Admin</a></div><h2>Kategoriyalar</h2><form class="form" method="post" action="/admin/categories" style="max-width:520px"><input name="name" placeholder="Kategoriya nomi" required /><button class="btn green" type="submit">Saqlash</button></form><table style="margin-top:16px"><tr><th>ID</th><th>Nomi</th></tr>${rows || `<tr><td colspan="2">Kategoriya yo'q</td></tr>`}</table></div>`, { admin:true }));
 } catch(e){ next(e);} });
 
-app.post("/admin/categories", requireAdmin, async (req,res,next)=>{ try {
+app.post("/admin/categories", requireAdmin, validate((body) => String(body.name || "").trim() ? null : "Kategoriya nomini kiriting"), async (req,res,next)=>{ try {
   const name = String(req.body.name || "").trim();
   if (!name) throw new Error("Kategoriya nomini kiriting");
   await q(`INSERT INTO categories(name) VALUES ($1) ON CONFLICT (name) DO NOTHING`, [name]);
@@ -1188,25 +1059,6 @@ app.get("/admin/sources/:code", requireAdmin, async (req,res,next)=>{ try {
   const orderRows = orders.rows.map(o => `<tr><td>${esc(o.batch_id || '-')}</td><td>${esc(o.customer_name || '-')}</td><td>${esc(o.phone || '-')}</td><td>${esc(o.books || '-')}</td><td>${money(o.total_sum)}</td><td>${esc(statusLabel(o.status))}</td><td>${dateUz(o.created_at)}</td></tr>`).join("");
   res.send(page(`${esc(s.name)} hisobot`, `<div class="panel"><div class="nav"><a class="btn dark" href="/admin/sources">← QR obyektlar</a></div><h2>${esc(s.name)}</h2><div class="stat-grid"><div class="stat"><div class="muted">Zakazlar</div><div class="n">${info.orders_count}</div></div><div class="stat"><div class="muted">Jami tushum</div><div class="n">${money(info.total_sum)}</div></div></div><div class="panel" style="margin-top:14px"><div><b>Kod:</b> ${esc(s.code)}</div><div style="margin-top:8px"><b>Bot link:</b> <code>https://t.me/${esc(TELEGRAM_BOT_USERNAME)}?start=${esc(s.code)}</code></div><div style="margin-top:8px"><b>Mijozlar:</b> ${esc(info.customers || '-')}</div></div><table style="margin-top:14px"><tr><th>Batch</th><th>Mijoz</th><th>Telefon</th><th>Kitoblar</th><th>Jami</th><th>Status</th><th>Sana</th></tr>${orderRows || `<tr><td colspan="7">Zakaz yo'q</td></tr>`}</table></div>`, { admin:true }));
 } catch(e){ next(e);} });
-
-app.get("/api/products", async (_req, res, next) => {
-  try {
-    const rows = await q(`SELECT id, title, sale_price, stock_qty, image, active FROM books ORDER BY id DESC`);
-    const data = rows.rows.map((b) => ({
-      sku: String(b.id || ""),
-      barcode: null,
-      title: String(b.title || ""),
-      price: Number(b.sale_price || 0),
-      stock_qty: Number(b.stock_qty || 0),
-      image_url: String(b.image || ""),
-      category: "Kitob",
-      active: Boolean(b.active),
-    }));
-    res.json(data);
-  } catch (e) {
-    next(e);
-  }
-});
 
 app.use((err, req, res, _next) => { res.status(500).send(page("Xatolik", `<div class="panel" style="max-width:760px;margin:0 auto"><div class="alert err">${esc(err && err.message ? err.message : "Noma'lum xatolik")}</div><a class="btn dark" href="javascript:history.back()">← Ortga</a></div>`, { admin:isAdmin(req) })); });
 

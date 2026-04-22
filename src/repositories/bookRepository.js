@@ -1,4 +1,4 @@
-const { q } = require('../app');
+const { q } = require('../config/db');
 
 async function listProductsForApi() {
   const r = await q(`SELECT b.id, b.title, b.sale_price, b.stock_qty, b.image, b.active, c.name AS category_name
