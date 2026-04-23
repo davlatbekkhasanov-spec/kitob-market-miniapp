@@ -508,7 +508,6 @@ async function initDb() {
   await q(`INSERT INTO counters(name,last_value) VALUES ('purchase',0) ON CONFLICT (name) DO NOTHING`);
   await q(`INSERT INTO counters(name,last_value) VALUES ('order',0) ON CONFLICT (name) DO NOTHING`);
 }
-async function nextPurchaseNo(client) { const counter = await client.query(`UPDATE counters SET last_value=last_value+1 WHERE name='purchase' RETURNING last_value`); return `PR-${String(Number(counter.rows[0].last_value)).padStart(6, "0")}`; }
 async function nextOrderBatchId(client) {
   await client.query(`INSERT INTO counters(name,last_value) VALUES ('order',0) ON CONFLICT (name) DO NOTHING`);
   const counter = await client.query(`UPDATE counters SET last_value=last_value+1 WHERE name='order' RETURNING last_value`);
@@ -582,154 +581,100 @@ registerWebRoutes(app, webController);
 app.get("/admin/login", (req, res) => res.send(page("Admin login", `<div class="panel" style="max-width:520px;margin:0 auto"><h2>Admin kirish</h2><form class="form" method="post" action="/admin/login"><input type="password" name="pin" placeholder="PIN" required /><button type="submit">Kirish</button></form></div>`)));
 app.post("/admin/login", (req, res) => { if (String(req.body.pin||"") !== ADMIN_PIN) return res.send(page("Admin login", `<div class="panel" style="max-width:520px;margin:0 auto"><div class="alert err">PIN noto'g'ri</div><a class="btn" href="/admin/login">Qayta urinish</a></div>`)); res.cookie("admin", signedAdminValue(), { signed:true, ...secureCookieOptions(req, 1000*60*60*12) }); res.redirect("/admin"); });
 app.get("/admin/logout", (_req, res) => { res.clearCookie("admin"); res.redirect("/"); });
-app.get("/admin", requireAdmin, async (_req, res, next) => { try { const stats=await q(`SELECT (SELECT COUNT(*) FROM books) AS books_count,(SELECT COUNT(*) FROM counterparties) AS counterparties_count,(SELECT COUNT(*) FROM purchases) AS purchases_count,(SELECT COUNT(*) FROM customer_orders) AS orders_count,(SELECT COALESCE(SUM(total_sum),0) FROM purchases) AS purchases_sum,(SELECT COALESCE(SUM(total_sum),0) FROM customer_orders) AS orders_sum`); const s=stats.rows[0]; res.send(page("Admin", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin/books">Kitoblar</a><a class="btn dark" href="/admin/counterparties">Kontragentlar</a><a class="btn dark" href="/admin/purchases/new">Prihod qilish</a><a class="btn dark" href="/admin/purchases">Prihodlar</a><a class="btn dark" href="/admin/orders">Zakazlar</a><a class="btn dark" href="/admin/categories">Kategoriyalar</a><a class="btn dark" href="/admin/sources">QR manbalar</a><a class="btn dark" href="/admin/reports">Hisobot</a><a class="btn red" href="/admin/logout">Chiqish</a></div><h2 style="margin-top:14px">Boshqaruv paneli</h2><div class="stat-grid"><div class="stat"><div class="muted">Kitoblar</div><div class="n">${s.books_count}</div></div><div class="stat"><div class="muted">Kontragentlar</div><div class="n">${s.counterparties_count}</div></div><div class="stat"><div class="muted">Prihodlar</div><div class="n">${s.purchases_count}</div></div><div class="stat"><div class="muted">Zakazlar</div><div class="n">${s.orders_count}</div></div><div class="stat"><div class="muted">Jami prihod</div><div class="n">${money(s.purchases_sum)}</div></div><div class="stat"><div class="muted">Jami zakaz</div><div class="n">${money(s.orders_sum)}</div></div></div></div>`, { admin:true })); } catch(e){ next(e);} });
-app.get("/admin/books", requireAdmin, async (_req,res,next)=>{ try { const r=await q(`SELECT b.*, c.name AS category_name FROM books b LEFT JOIN categories c ON c.id=b.category_id ORDER BY b.id DESC`); const rows=r.rows.map((b)=>`<tr><td>${b.id}</td><td>${esc(b.title)}</td><td>${esc(b.category_name || '-')}</td><td>${money(b.purchase_price)}</td><td>${b.markup_percent}%</td><td>${money(b.sale_price)}</td><td>${b.stock_qty}</td></tr>`).join(""); res.send(page("Kitoblar", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin">← Admin</a></div><h2>Kitoblar</h2><table><tr><th>ID</th><th>Nomi</th><th>Kategoriya</th><th>Olingan narx</th><th>Pereocenka</th><th>Sotuv narxi</th><th>Qoldiq</th></tr>${rows || `<tr><td colspan="7">Ma'lumot yo'q</td></tr>`}</table></div>`, { admin:true })); } catch(e){ next(e);} });
-app.get("/admin/counterparties", requireAdmin, async (_req,res,next)=>{ try { const r=await q(`SELECT * FROM counterparties ORDER BY id DESC`); const rows=r.rows.map((c)=>`<tr><td>${c.id}</td><td>${esc(c.name)}</td><td>${esc(c.phone)}</td><td>${esc(c.note)}</td></tr>`).join(""); res.send(page("Kontragentlar", `<div class="panel"><div class="nav"><a class="btn" href="/admin/counterparties/new">+ Yangi kontragent</a><a class="btn dark" href="/admin">← Admin</a></div><h2>Kontragentlar</h2><table><tr><th>ID</th><th>Nomi</th><th>Telefon</th><th>Izoh</th></tr>${rows || `<tr><td colspan="4">Kontragent yo'q</td></tr>`}</table></div>`, { admin:true })); } catch(e){ next(e);} });
-app.get("/admin/counterparties/new", requireAdmin, (_req,res)=> res.send(page("Yangi kontragent", `<div class="panel" style="max-width:760px;margin:0 auto"><h2>Yangi kontragent</h2><form class="form" method="post" action="/admin/counterparties/new"><input name="name" placeholder="Kontragent nomi" required /><input name="phone" placeholder="Telefon" /><textarea name="note" placeholder="Izoh"></textarea><button class="btn green" type="submit">Saqlash</button></form></div>`, { admin:true })));
-app.post("/admin/counterparties/new", requireAdmin, validate((body) => String(body.name || "").trim() ? null : "Kontragent nomi majburiy"), async (req,res,next)=>{ try { await q(`INSERT INTO counterparties(name, phone, note) VALUES ($1,$2,$3)`, [String(req.body.name||""), String(req.body.phone||""), String(req.body.note||"")]); res.redirect("/admin/counterparties"); } catch(e){ next(e);} });
-app.get("/admin/purchases/new", requireAdmin, async (_req,res,next)=>{ try {
-  const cps=(await q(`SELECT id,name FROM counterparties ORDER BY name`)).rows;
-  const books=(await q(`SELECT id,title FROM books ORDER BY title`)).rows;
-  const categories=(await q(`SELECT id,name FROM categories ORDER BY name`)).rows;
-  const cpOptions=cps.map((c)=>`<option value="${c.id}">${esc(c.name)}</option>`).join("");
-  const bookOptions=books.map((b)=>`<option value="${b.id}">${esc(b.title)}</option>`).join("");
-  const catOptions=categories.map((c)=>`<option value="${c.id}">${esc(c.name)}</option>`).join("");
-  res.send(page("Prihod qilish", `<div class="panel" style="max-width:900px;margin:0 auto"><div class="nav"><a class="btn dark" href="/admin">← Admin</a><a class="btn soft" href="/admin/counterparties/new">Avval kontragent qo'shish</a><a class="btn soft" href="/admin/categories">Kategoriyalar</a></div><h2>Prihod qilish</h2><form class="form" method="post" action="/admin/purchases/new" enctype="multipart/form-data"><div class="grid2"><select name="counterparty_id" required><option value="">Kontragent tanlang</option>${cpOptions}</select><input type="date" name="doc_date" value="${new Date().toISOString().slice(0,10)}" required /></div><div class="grid2"><select name="category_id"><option value="">Kategoriya tanlang</option>${catOptions}</select><select name="existing_book_id"><option value="">Mavjud mahsulotni tanlang (ixtiyoriy)</option>${bookOptions}</select></div><div class="grid2"><input name="title" placeholder="Yoki yangi mahsulot nomi" /><input name="author" placeholder="Muallif / Tavsif" /></div><div class="grid2"><input type="file" name="image" accept="image/*" /><input type="number" name="qty" min="1" placeholder="Nechta olingan" required /></div><div class="grid2"><input type="number" name="purchase_price" min="0" placeholder="Nech pulga olingan (1 dona)" id="purchasePriceInput" required /><input type="number" name="sale_price" min="0" placeholder="Nech pulga sotiladi (1 dona)" id="salePriceInput" /></div><div class="grid2"><input type="number" step="0.01" name="markup_percent" min="0" placeholder="Pereocenka foizi (avto hisoblanadi)" id="markupPercentInput" /><div class="small">Sotuv narxini yozsangiz foiz avtomatik hisoblanadi.</div></div><textarea name="note" placeholder="Izoh"></textarea><button type="submit" class="btn green">Saqlash</button></form></div><script>const purchaseInput=document.getElementById('purchasePriceInput');const saleInput=document.getElementById('salePriceInput');const markupInput=document.getElementById('markupPercentInput');let lock=false;function f(v){return Number(v||0);}function calcMarkup(){if(lock)return; const p=f(purchaseInput&&purchaseInput.value); const s=f(saleInput&&saleInput.value); if(!p||!s||!markupInput)return; lock=true; markupInput.value=((s/p-1)*100).toFixed(2); lock=false;}function calcSale(){if(lock)return; const p=f(purchaseInput&&purchaseInput.value); const m=f(markupInput&&markupInput.value); if(!p||!markupInput||!saleInput)return; lock=true; saleInput.value=Math.round(p*(1+m/100)); lock=false;}if(saleInput){saleInput.addEventListener('input',calcMarkup);}if(purchaseInput){purchaseInput.addEventListener('input',()=>{if(saleInput&&saleInput.value){calcMarkup();}else{calcSale();}});}if(markupInput){markupInput.addEventListener('input',calcSale);}</script>`, { admin:true }));
-} catch(e){ next(e);} });
-app.post("/admin/purchases/new", requireAdmin, upload.single("image"), validate((body) => { if (Number(body.qty || 0) < 1) return "Soni noto'g'ri"; if (Number(body.purchase_price || 0) < 0) return "Olingan narx noto'g'ri"; return null; }), async (req,res,next)=>{ const client=await pool.connect(); try {
-  const qty=Number(req.body.qty||0);
-  const purchasePrice=Number(req.body.purchase_price||0);
-  const requestedSalePrice=Number(req.body.sale_price||0);
-  let markupPercent=Number(req.body.markup_percent||0);
-  if(!Number.isFinite(qty)||qty<=0) throw new Error("Soni noto'g'ri");
-  if(!Number.isFinite(purchasePrice)||purchasePrice<0) throw new Error("Olingan narx noto'g'ri");
-  let salePrice = 0;
-  if (Number.isFinite(requestedSalePrice) && requestedSalePrice > 0) {
-    salePrice = Math.round(requestedSalePrice);
-    if (purchasePrice > 0) markupPercent = Number((((salePrice / purchasePrice) - 1) * 100).toFixed(2));
-  } else {
-    if(!Number.isFinite(markupPercent)||markupPercent<0) throw new Error("Pereocenka foizi noto'g'ri");
-    salePrice=Math.round(purchasePrice*(1+markupPercent/100));
-  }
-  await client.query("BEGIN");
-  let bookId=Number(req.body.existing_book_id||0);
-  const imagePath=await saveImage(req.file);
-  const lineSum=qty*purchasePrice;
-  if(!bookId){
-    const title=String(req.body.title||"").trim();
-    if(!title) throw new Error("Yangi kitob nomini kiriting yoki mavjud kitobni tanlang");
-    const inserted=await client.query(`INSERT INTO books(title, author, image, purchase_price, markup_percent, sale_price, stock_qty, active, category_id) VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE,$8) RETURNING id`, [title, String(req.body.author||""), imagePath, purchasePrice, markupPercent, salePrice, qty, Number(req.body.category_id||0) || null]);
-    bookId=inserted.rows[0].id;
-  } else {
-    const current=await client.query(`SELECT * FROM books WHERE id=$1 FOR UPDATE`, [bookId]);
-    if(!current.rows.length) throw new Error("Kitob topilmadi");
-    await client.query(`UPDATE books SET author = CASE WHEN $1 <> '' THEN $1 ELSE author END, image = CASE WHEN $2 <> '' THEN $2 ELSE image END, purchase_price = $3, markup_percent = $4, sale_price = $5, stock_qty = stock_qty + $6, category_id = COALESCE($8, category_id), updated_at = NOW() WHERE id = $7`, [String(req.body.author||""), imagePath, purchasePrice, markupPercent, salePrice, qty, bookId, Number(req.body.category_id||0) || null]);
-  }
-  const docNo=await nextPurchaseNo(client);
-  const purchase=await client.query(`INSERT INTO purchases(doc_no, doc_date, counterparty_id, note, total_sum) VALUES ($1,$2,$3,$4,$5) RETURNING id`, [docNo, req.body.doc_date, req.body.counterparty_id, String(req.body.note||""), lineSum]);
-  await client.query(`INSERT INTO purchase_lines(purchase_id, book_id, qty, purchase_price, markup_percent, sale_price, line_sum) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [purchase.rows[0].id, bookId, qty, purchasePrice, markupPercent, salePrice, lineSum]);
-  await client.query("COMMIT");
-  res.redirect(`/admin/purchases/${purchase.rows[0].id}`);
-} catch(e){ await client.query("ROLLBACK"); next(e);} finally { client.release(); } });
-app.get("/admin/purchases", requireAdmin, async (_req,res,next)=>{ try { const r=await q(`SELECT p.*, COALESCE(c.name,'-') AS counterparty_name FROM purchases p LEFT JOIN counterparties c ON c.id=p.counterparty_id ORDER BY p.id DESC`); const rows=r.rows.map((p)=>`<tr><td>${esc(p.doc_no)}</td><td>${esc(String(p.doc_date))}</td><td>${esc(p.counterparty_name)}</td><td>${money(p.total_sum)}</td><td><a class="btn soft" href="/admin/purchases/${p.id}">Ko'rish</a></td></tr>`).join(""); res.send(page("Prihodlar", `<div class="panel"><div class="nav"><a class="btn" href="/admin/purchases/new">+ Prihod qilish</a><a class="btn dark" href="/admin">← Admin</a></div><h2>Prihodlar</h2><table><tr><th>№</th><th>Sana</th><th>Kontragent</th><th>Jami</th><th></th></tr>${rows || `<tr><td colspan="5">Prihod yo'q</td></tr>`}</table></div>`, { admin:true })); } catch(e){ next(e);} });
-app.get("/admin/purchases/:id", requireAdmin, async (req,res,next)=>{ try { const id=Number(req.params.id); const h=await q(`SELECT p.*, COALESCE(c.name,'-') AS counterparty_name FROM purchases p LEFT JOIN counterparties c ON c.id=p.counterparty_id WHERE p.id=$1`, [id]); if(!h.rows.length) return res.status(404).send("Topilmadi"); const p=h.rows[0]; const lines=await q(`SELECT pl.*, b.title FROM purchase_lines pl JOIN books b ON b.id=pl.book_id WHERE pl.purchase_id=$1`, [id]); const rows=lines.rows.map((l)=>`<tr><td>${esc(l.title)}</td><td>${l.qty}</td><td>${money(l.purchase_price)}</td><td>${l.markup_percent}%</td><td>${money(l.sale_price)}</td><td>${money(l.line_sum)}</td></tr>`).join(""); res.send(page("Prihod", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin/purchases">← Prihodlar</a><a class="btn" href="/admin/purchases/${id}/pdf">PDF</a></div><h2>Prihod ${esc(p.doc_no)}</h2><div class="grid2"><div class="card"><b>Sana</b><br>${esc(String(p.doc_date))}</div><div class="card"><b>Kontragent</b><br>${esc(p.counterparty_name)}</div></div><table style="margin-top:12px"><tr><th>Kitob</th><th>Soni</th><th>Olingan narx</th><th>Pereocenka</th><th>Sotuv narxi</th><th>Summa</th></tr>${rows}</table><div class="right" style="margin-top:12px;font-size:20px;font-weight:900">Jami: ${money(p.total_sum)}</div></div>`, { admin:true })); } catch(e){ next(e);} });
-app.get("/admin/purchases/:id/pdf", requireAdmin, async (req, res, next) => {
+
+async function adminOrderBatch(orderId) {
+  const r = await q(`SELECT batch_id FROM customer_orders WHERE id=$1`, [orderId]);
+  return String(r.rows[0]?.batch_id || "").trim();
+}
+
+app.get("/admin", requireAdmin, async (_req, res, next) => {
   try {
-    const id = Number(req.params.id);
-    const h = await q(`SELECT p.*, COALESCE(c.name,'-') AS counterparty_name FROM purchases p LEFT JOIN counterparties c ON c.id=p.counterparty_id WHERE p.id=$1`, [id]);
-    if (!h.rows.length) return res.status(404).send("Topilmadi");
-    const p = h.rows[0];
-    const lines = await q(`SELECT pl.*, b.title FROM purchase_lines pl JOIN books b ON b.id=pl.book_id WHERE pl.purchase_id=$1`, [id]);
-
-    const orgName = process.env.ORG_NAME || "Kitob Market";
-    const warehouseName = process.env.WAREHOUSE_NAME || "Asosiy ombor";
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="${p.doc_no}.pdf"`);
-
-    const doc = new PDFDocument({ margin:36, size: "A4" });
-    doc.pipe(res);
-    const regularFont = pickPdfFontPath("DejaVuSans.ttf");
-    const boldFont = pickPdfFontPath("DejaVuSans-Bold.ttf");
-    if (regularFont) doc.registerFont("ui", regularFont);
-    if (boldFont) doc.registerFont("ui-bold", boldFont);
-    const fontRegular = regularFont ? "ui" : "Helvetica";
-    const fontBold = boldFont ? "ui-bold" : "Helvetica-Bold";
-
-    const pageWidth = doc.page.width;
-    const left = 36;
-    const right = pageWidth - 36;
-
-    doc.font(fontBold).fontSize(20).fillColor("#0f1e38").text(`Prihod nakladnoy No ${p.doc_no}`, left, 34, { align: "left" });
-    doc.font(fontRegular).fontSize(12).fillColor("#334155");
-    doc.text(`Sana: ${dateUz(p.doc_date)}`, left, 62);
-    doc.text(`Tashkilot: ${orgName}`, left, 80);
-    doc.text(`Ombor: ${warehouseName}`, left, 98);
-    doc.text(`Kontragent: ${p.counterparty_name}`, left, 116);
-    doc.moveTo(left, 138).lineTo(right, 138).strokeColor("#cbd5e1").lineWidth(1).stroke();
-
-    const tableTop = 150;
-    const rowH = 26;
-    const cols = [
-      { key: "idx", title: "No", width: 32, align: "center" },
-      { key: "title", title: "Nomi", width: 300, align: "left" },
-      { key: "qty", title: "Soni", width: 80, align: "right" },
-      { key: "price", title: "Narxi", width: 111, align: "right" },
-    ];
-
-    const fmt = (n) => Number(n || 0).toLocaleString("ru-RU");
-    const xBy = [];
-    let currentX = left;
-    cols.forEach((c) => {
-      xBy.push(currentX);
-      currentX += c.width;
-    });
-
-    const drawRow = (y, row, isHeader = false) => {
-      doc.rect(left, y, right - left, rowH).fillAndStroke(isHeader ? "#e8eefc" : "#ffffff", "#cbd5e1");
-      cols.forEach((c, i) => {
-        const x = xBy[i];
-        if (i > 0) doc.moveTo(x, y).lineTo(x, y + rowH).strokeColor("#cbd5e1").lineWidth(1).stroke();
-        const text = row[c.key];
-        doc.font(isHeader ? fontBold : fontRegular).fontSize(10).fillColor("#0f172a").text(
-          String(text),
-          x + 5,
-          y + 8,
-          { width: c.width - 10, align: c.align || "left", lineBreak: false, ellipsis: true }
-        );
-      });
-    };
-
-    drawRow(tableTop, Object.fromEntries(cols.map((c) => [c.key, c.title])), true);
-
-    let y = tableTop + rowH;
-    lines.rows.forEach((l, i) => {
-      const row = {
-        idx: i + 1,
-        title: l.title,
-        qty: fmt(l.qty),
-        price: fmt(l.purchase_price),
-      };
-      drawRow(y, row, false);
-      y += rowH;
-    });
-
-    const totalsY = y + 14;
-    doc.font(fontRegular).fontSize(11).fillColor("#0f172a");
-    doc.text(`Pozitsiyalar soni: ${lines.rows.length}`, left, totalsY);
-    doc.font(fontBold).fontSize(13).fillColor("#0f1e38").text(`Jami: ${fmt(p.total_sum)} so'm`, left, totalsY, { align: "right" });
-
-    const signY = totalsY + 46;
-    doc.font(fontRegular).fontSize(11).fillColor("#334155");
-    doc.text("Topshirdi: ____________________", left, signY);
-    doc.text("Qabul qildi: ____________________", left + 290, signY);
-
-    doc.end();
+    const stats = await q(`SELECT COUNT(DISTINCT batch_id) AS orders_count, COALESCE(SUM(total_sum),0) AS orders_sum FROM customer_orders`);
+    const s = stats.rows[0] || {};
+    res.send(page("Admin", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin/orders">Zakazlar</a><a class="btn dark" href="/admin/sources">QR manbalar</a><a class="btn dark" href="/admin/reports">Manba hisobotlari</a><a class="btn red" href="/admin/logout">Chiqish</a></div><h2 style="margin-top:14px">Yengil operatsion panel</h2><div class="stat-grid"><div class="stat"><div class="muted">Jami zakazlar</div><div class="n">${s.orders_count}</div></div><div class="stat"><div class="muted">Jami tushum</div><div class="n">${money(s.orders_sum)}</div></div></div></div>`, { admin:true }));
   } catch (e) {
     next(e);
   }
 });
-app.get("/admin/orders", requireAdmin, async (_req,res,next)=>{ try { const r=await q(`SELECT o.*, b.title FROM customer_orders o JOIN books b ON b.id=o.book_id ORDER BY o.id DESC`); const rows=r.rows.map((o)=>`<tr><td>#${o.id}</td><td>${esc(o.batch_id || '-')}</td><td>${esc(o.title)}</td><td>${o.qty}</td><td>${esc(o.customer_name || "-")}</td><td>${esc(o.phone)}</td><td>${esc(o.source_name || '-')}</td><td>${money(o.total_sum)}</td><td>${esc(statusLabel(o.status))}</td><td><a class="btn soft" href="/admin/orders/${o.id}/receipt">Chek</a></td></tr>`).join(""); res.send(page("Zakazlar", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin">← Admin</a></div><h2>Zakazlar</h2><table><tr><th>ID</th><th>Batch</th><th>Kitob</th><th>Soni</th><th>Mijoz</th><th>Telefon</th><th>Manba</th><th>Jami</th><th>Status</th><th></th></tr>${rows || `<tr><td colspan="10">Zakaz yo'q</td></tr>`}</table></div>`, { admin:true })); } catch(e){ next(e);} });
+
+app.get("/admin/orders", requireAdmin, async (_req,res,next)=>{
+  try {
+    const r=await q(`SELECT o.*, b.title FROM customer_orders o JOIN books b ON b.id=o.book_id ORDER BY o.id DESC`);
+    const rows=r.rows.map((o)=>`<tr><td>#${o.id}</td><td>${esc(o.batch_id || '-')}</td><td>${esc(o.title)}</td><td>${o.qty}</td><td>${esc(o.customer_name || "-")}</td><td>${esc(o.phone)}</td><td>${esc(o.source_name || '-')}</td><td>${money(o.total_sum)}</td><td>${esc(statusLabel(o.status))}</td><td>${esc(paymentStatusLabel(o.payment_status))}</td><td><a class="btn soft" href="/admin/orders/${o.id}">Ko'rish</a></td></tr>`).join("");
+    res.send(page("Zakazlar", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin">← Admin</a></div><h2>Zakazlar</h2><table><tr><th>ID</th><th>Batch</th><th>Kitob</th><th>Soni</th><th>Mijoz</th><th>Telefon</th><th>Manba</th><th>Jami</th><th>Status</th><th>To'lov</th><th></th></tr>${rows || `<tr><td colspan="11">Zakaz yo'q</td></tr>`}</table></div>`, { admin:true }));
+  } catch(e){
+    next(e);
+  }
+});
+
+app.get("/admin/orders/:id", requireAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await q(`SELECT o.*, b.title, b.author FROM customer_orders o JOIN books b ON b.id=o.book_id WHERE o.id=$1`, [id]);
+    if (!r.rows.length) return res.status(404).send("Topilmadi");
+    const o = r.rows[0];
+    const actions = [];
+    if (String(o.payment_status || "") !== "paid" && String(o.payment_status || "") !== "confirmed") {
+      actions.push(`<form method="post" action="/admin/orders/${o.id}/confirm"><button class="btn green" type="submit">To'lovni tasdiqlash</button></form>`);
+    }
+    if (String(o.status || "") !== "delivered") {
+      actions.push(`<form method="post" action="/admin/orders/${o.id}/deliver"><button class="btn" type="submit">Yetkazildi</button></form>`);
+    }
+    if (String(o.status || "") !== "returned") {
+      actions.push(`<form method="post" action="/admin/orders/${o.id}/return"><button class="btn red" type="submit">Vozvrat</button></form>`);
+    }
+    actions.push(`<a class="btn soft" href="/admin/orders/${o.id}/receipt">Chek (PDF)</a>`);
+
+    res.send(page(`Zakaz #${o.id}`, `<div class="panel"><div class="nav"><a class="btn dark" href="/admin/orders">← Zakazlar</a></div><h2>Zakaz #${o.id}</h2><div class="grid2"><div class="card"><b>Batch</b><br>${esc(o.batch_id || '-')}</div><div class="card"><b>Sana</b><br>${dateUz(o.created_at)}</div></div><div class="grid2"><div class="card"><b>Mijoz</b><br>${esc(o.customer_name || '-')}<br>${esc(o.phone || '-')}</div><div class="card"><b>Manba</b><br>${esc(o.source_name || '-')}<br><code>${esc(o.source_code || '-')}</code></div></div><div class="grid2"><div class="card"><b>Kitob</b><br>${esc(o.title || '-')} (${o.qty} dona)</div><div class="card"><b>Jami</b><br>${money(o.total_sum)}</div></div><div class="grid2"><div class="card"><b>Holat</b><br>${esc(statusLabel(o.status))}</div><div class="card"><b>To'lov</b><br>${esc(paymentTypeLabel(o.payment_type))} / ${esc(paymentProviderLabel(o.payment_provider))}<br>${esc(paymentStatusLabel(o.payment_status))}</div></div>${o.payment_proof_image ? `<div class="panel"><b>Online chek:</b><br><a href="${esc(o.payment_proof_image)}" target="_blank" rel="noopener">${esc(o.payment_proof_image)}</a></div>` : ''}<div class="actions" style="margin-top:12px">${actions.join("")}</div></div>`, { admin: true }));
+  } catch (e) {
+    next(e);
+  }
+});
+
+app.post("/admin/orders/:id/confirm", requireAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const order = await q(`SELECT payment_type FROM customer_orders WHERE id=$1`, [id]);
+    if (!order.rows.length) return res.status(404).send("Topilmadi");
+    const batch = await adminOrderBatch(id);
+    if (!batch) return res.status(404).send("Topilmadi");
+    const paymentStatus = String(order.rows[0].payment_type || "") === "online" ? "paid" : "confirmed";
+    await q(`UPDATE customer_orders SET payment_status=$1 WHERE batch_id=$2`, [paymentStatus, batch]);
+    await updateGroupOrderMessage(batch);
+    res.redirect(`/admin/orders/${id}`);
+  } catch (e) {
+    next(e);
+  }
+});
+
+app.post("/admin/orders/:id/deliver", requireAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const batch = await adminOrderBatch(id);
+    if (!batch) return res.status(404).send("Topilmadi");
+    await q(`UPDATE customer_orders SET status='delivered' WHERE batch_id=$1`, [batch]);
+    await q(`UPDATE customer_orders SET receipt_sent=TRUE WHERE batch_id=$1`, [batch]);
+    await sendReceiptNotifications(batch);
+    await updateGroupOrderMessage(batch);
+    res.redirect(`/admin/orders/${id}`);
+  } catch (e) {
+    next(e);
+  }
+});
+
+app.post("/admin/orders/:id/return", requireAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const batch = await adminOrderBatch(id);
+    if (!batch) return res.status(404).send("Topilmadi");
+    await q(`UPDATE customer_orders SET status='returned' WHERE batch_id=$1`, [batch]);
+    await updateGroupOrderMessage(batch);
+    res.redirect(`/admin/orders/${id}`);
+  } catch (e) {
+    next(e);
+  }
+});
+
 app.get("/admin/orders/:id/receipt", requireAdmin, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
@@ -778,24 +723,9 @@ app.get("/admin/orders/:id/receipt", requireAdmin, async (req, res, next) => {
   }
 });
 app.get("/admin/reports", requireAdmin, async (_req,res,next)=>{ try {
-  const stock=await q(`SELECT title, stock_qty, sale_price, purchase_price FROM books ORDER BY title`);
-  const rows=stock.rows.map((b)=>`<tr><td>${esc(b.title)}</td><td>${b.stock_qty}</td><td>${money(b.purchase_price)}</td><td>${money(b.sale_price)}</td><td>${money(Number(b.stock_qty) * Number(b.sale_price || 0))}</td></tr>`).join("");
   const sourceStats = await q(`SELECT s.name AS source_name, s.code AS source_code, COUNT(DISTINCT o.batch_id) AS orders_count, COALESCE(SUM(o.total_sum),0) AS total_sum, COALESCE(STRING_AGG(DISTINCT NULLIF(o.customer_name,''), ', '), '-') AS customers FROM source_refs s LEFT JOIN customer_orders o ON o.source_code=s.code GROUP BY s.name, s.code ORDER BY s.code`);
   const sourceRows = sourceStats.rows.map((s)=>`<tr><td>${esc(s.source_name || s.source_code)}</td><td>${esc(s.source_code)}</td><td>${s.orders_count}</td><td>${money(s.total_sum)}</td><td>${esc(s.customers || "-")}</td><td><a class="btn soft" href="/admin/sources/${encodeURIComponent(s.source_code)}">Batafsil</a></td></tr>`).join("");
-  res.send(page("Hisobot", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin">← Admin</a><a class="btn soft" href="/admin/sources">QR obyektlar</a></div><h2>Ostatka va hisobot</h2><table><tr><th>Kitob</th><th>Qoldiq</th><th>Olingan narx</th><th>Sotuv narxi</th><th>Qoldiq summasi</th></tr>${rows || `<tr><td colspan="5">Ma'lumot yo'q</td></tr>`}</table><h2 style="margin-top:18px">QR obyektlar bo'yicha analytics</h2><table><tr><th>Obekt</th><th>Kod</th><th>Zakazlar</th><th>Jami</th><th>Mijozlar</th><th></th></tr>${sourceRows || `<tr><td colspan="6">Ma'lumot yo'q</td></tr>`}</table></div>`, { admin:true }));
-} catch(e){ next(e);} });
-
-app.get("/admin/categories", requireAdmin, async (_req,res,next)=>{ try {
-  const r = await q(`SELECT * FROM categories ORDER BY name`);
-  const rows = r.rows.map(c => `<tr><td>${c.id}</td><td>${esc(c.name)}</td></tr>`).join("");
-  res.send(page("Kategoriyalar", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin">← Admin</a></div><h2>Kategoriyalar</h2><form class="form" method="post" action="/admin/categories" style="max-width:520px"><input name="name" placeholder="Kategoriya nomi" required /><button class="btn green" type="submit">Saqlash</button></form><table style="margin-top:16px"><tr><th>ID</th><th>Nomi</th></tr>${rows || `<tr><td colspan="2">Kategoriya yo'q</td></tr>`}</table></div>`, { admin:true }));
-} catch(e){ next(e);} });
-
-app.post("/admin/categories", requireAdmin, validate((body) => String(body.name || "").trim() ? null : "Kategoriya nomini kiriting"), async (req,res,next)=>{ try {
-  const name = String(req.body.name || "").trim();
-  if (!name) throw new Error("Kategoriya nomini kiriting");
-  await q(`INSERT INTO categories(name) VALUES ($1) ON CONFLICT (name) DO NOTHING`, [name]);
-  res.redirect("/admin/categories");
+  res.send(page("Manba hisobotlari", `<div class="panel"><div class="nav"><a class="btn dark" href="/admin">← Admin</a><a class="btn soft" href="/admin/sources">QR obyektlar</a></div><h2>QR/source analytics</h2><table><tr><th>Obekt</th><th>Kod</th><th>Zakazlar</th><th>Jami</th><th>Mijozlar</th><th></th></tr>${sourceRows || `<tr><td colspan="6">Ma'lumot yo'q</td></tr>`}</table></div>`, { admin:true }));
 } catch(e){ next(e);} });
 
 app.get("/admin/sources", requireAdmin, async (_req,res,next)=>{ try {
