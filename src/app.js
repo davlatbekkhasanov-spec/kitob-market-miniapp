@@ -56,6 +56,8 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(cookieParser(SESSION_SECRET));
 app.use(basicRateLimit());
+app.use(express.static(__dirname));
+app.use(express.static(path.join(__dirname, "..")));
 app.use("/uploads", express.static(UPLOAD_DIR));
 
 function esc(value = "") { return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;"); }
@@ -574,6 +576,11 @@ const telegramService = createTelegramService({ tg, decodeBatchToken, sourceMeta
 const telegramController = createTelegramController(telegramService, { statusActionSig });
 app.use("/telegram", createTelegramRouter(telegramController));
 app.use("/api", apiRouter);
+app.get("/", (req, res, next) => {
+  const hasMiniAppQuery = Boolean(String(req.query.source || req.query.search || req.query.category_id || "").trim());
+  if (hasMiniAppQuery) return next();
+  return res.sendFile(path.join(__dirname, "..", "frontend.html"));
+});
 
 const webController = createWebController({ validate, upload, pool, q, resolveLocation, calculateDeliveryFromLocation, createTelegramService, tg, decodeBatchToken, sourceMeta, openWebAppButton, normalizeTelegramTarget, statusLabel, updateGroupOrderMessage, sendReceiptNotifications, verifyTelegramInitData, ensureBindToken, TELEGRAM_GROUP_CHAT_ID, createTelegramController, statusActionSig, createTelegramRouter, apiRouter, getSourceCode, isSecureRequest, secureCookieOptions, cartSessionId, cartCount, esc, page, isAdmin, telegramAutoBindScript, money, paymentProviderLink, normalizePaymentType, normalizePaymentProvider, saveImage, nextOrderBatchId, sendAcceptedMessage, getBatchSummary, telegramOrderText, sendOrderToGroup, sourceBadge, cartItemHtml, getCartItems, DELIVERY_FEE });
 registerWebRoutes(app, webController);
